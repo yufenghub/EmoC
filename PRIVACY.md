@@ -19,11 +19,15 @@ EmoC may store the following data locally on your device:
 - Android 系统媒体控件所需的播放会话状态。
   Android media-session state used by system playback controls.
 
-## 网络请求 / Network Requests
+## 网络请求与接口 / Network Requests and Endpoints
 
-账号、歌单、搜索、歌词、封面和播放相关请求会发送到网易云音乐服务。这些请求受网易云音乐自身服务条款和隐私政策约束。
+账号、歌单、搜索、歌词、封面和播放相关请求会发送到网易云音乐服务。EmoC 依赖用户自己的 `music.163.com` 官网会话，部分功能会调用网易云音乐网页端接口以及第三方社区常见的兼容接口路径。
 
-Music account, playlist, search, lyric, cover, and playback-related requests are sent to NetEase Cloud Music services. These requests are governed by NetEase Cloud Music's own terms and privacy policy.
+Music account, playlist, search, lyric, cover, and playback-related requests are sent to NetEase Cloud Music services. EmoC depends on the user's own `music.163.com` website session. Some features call NetEase Cloud Music web endpoints and community-known compatibility-style endpoint paths.
+
+这些接口并非 EmoC 提供，也不是网易云音乐开放平台商业授权 API。相关请求受网易云音乐自身服务条款和隐私政策约束。
+
+These endpoints are not provided by EmoC and are not commercial APIs authorized by the NetEase Cloud Music Open Platform. Related requests are governed by NetEase Cloud Music's own terms and privacy policy.
 
 EmoC 不托管音乐文件、歌词、封面或账号服务。
 
@@ -52,11 +56,15 @@ Desktop lyrics permission is requested only when you enable the feature.
 
 Cached app data is used to improve startup speed and restore visible state after restart. You can clear cached content from the app settings page.
 
+安装后首次打开可能出现加载失败，通常删除后台后重新进入即可恢复。此行为通常与首次会话初始化、缓存建立或第三方服务返回时机有关。
+
+The first launch after installation may fail to load. Removing the app from recents and reopening usually resolves it. This is usually related to initial session setup, cache creation, or third-party service response timing.
+
 ## 第三方状态 / Third-Party Status
 
-EmoC 不是网易云音乐官方应用。如果你不希望第三方客户端依赖官网/会话流程，请不要在本应用中登录账号。
+EmoC 不是网易云音乐官方应用。如果你不希望第三方客户端依赖官网/会话流程，或不愿承担账号风控、账号限制、功能失效和服务条款风险，请不要在本应用中登录账号。
 
-EmoC is not an official NetEase Cloud Music app. Do not enter credentials or use this app if you are not comfortable with a third-party client depending on the official website/session flow.
+EmoC is not an official NetEase Cloud Music app. Do not enter credentials or use this app if you are not comfortable with a third-party client depending on the official website/session flow, or if you do not accept account risk control, account restrictions, feature breakage, and service-term risks.
 
 ## 联系 / Contact
 

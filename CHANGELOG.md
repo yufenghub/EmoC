@@ -24,10 +24,8 @@ Public versions should match the version in `pubspec.yaml`.
   Desktop lyrics settings including opacity, color, size, lock, multi-line mode, and foreground auto-hide.
 - 动态取色、浅色/深色/跟随系统主题、缓存清理和播放音质偏好。
   Dynamic color, light/dark/system theme settings, cache clearing, and playback quality preference.
-- 签名 release 构建配置。
-  Signed release build configuration.
-- 公开文档、隐私说明、免责声明、版本规则和 GPL-3.0-or-later 许可证。
-  Public documentation, privacy policy, disclaimer, versioning rules, and GPL-3.0-or-later license.
+- 公开文档、界面展示、隐私说明、免责声明和 GPL-3.0-or-later 许可证。
+  Public documentation, screenshots, privacy policy, disclaimer, and GPL-3.0-or-later license.
 
 ### 说明 / Notes
 

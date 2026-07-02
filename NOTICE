@@ -10,6 +10,8 @@ EmoC 是第三方、免费的自由软件，使用 GNU General Public License ve
 
 EmoC 不隶属于网易云音乐，也未获得网易云音乐官方授权、赞助、认可或合作。
 
+EmoC 依赖用户自己的 music.163.com 官网会话，部分功能会调用网易云音乐网页端接口以及第三方社区常见的兼容接口路径。这些接口并非 EmoC 提供，也不是网易云音乐开放平台商业授权 API。
+
 English Notice:
 
 EmoC is third-party, free software distributed under the GNU General Public License version 3.0 or any later version.
@@ -19,3 +21,5 @@ SPDX-License-Identifier: GPL-3.0-or-later
 Unless a file explicitly states otherwise, source files in this repository are licensed under GPL-3.0-or-later.
 
 EmoC is not affiliated with, endorsed by, sponsored by, authorized by, or officially connected to NetEase Cloud Music.
+
+EmoC depends on the user's own music.163.com website session. Some features call NetEase Cloud Music web endpoints and community-known compatibility-style endpoint paths. These endpoints are not provided by EmoC and are not commercial APIs authorized by the NetEase Cloud Music Open Platform.
