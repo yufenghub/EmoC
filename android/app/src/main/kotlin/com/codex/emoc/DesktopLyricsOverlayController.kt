@@ -81,6 +81,10 @@ class DesktopLyricsOverlayController(private val context: Context) {
         return true
     }
 
+    fun isActive(): Boolean {
+        return rootView != null && canDrawOverlays()
+    }
+
     fun updateStyle(
         opacity: Float,
         fontSize: Float,
