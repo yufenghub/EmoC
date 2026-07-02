@@ -2,13 +2,20 @@ EmoC
 
 Copyright (c) 2026 EmoC contributors.
 
-EmoC is third-party, free software distributed under the GNU General Public
-License version 3.0 or any later version.
+中文说明：
+
+EmoC 是第三方、免费的自由软件，使用 GNU General Public License version 3.0 or any later version 分发，即 GPL-3.0-or-later。
+
+除非文件中另有明确说明，本仓库源码均按 GPL-3.0-or-later 授权。
+
+EmoC 不隶属于网易云音乐，也未获得网易云音乐官方授权、赞助、认可或合作。
+
+English Notice:
+
+EmoC is third-party, free software distributed under the GNU General Public License version 3.0 or any later version.
 
 SPDX-License-Identifier: GPL-3.0-or-later
 
-Unless a file explicitly states otherwise, source files in this repository are
-licensed under GPL-3.0-or-later.
+Unless a file explicitly states otherwise, source files in this repository are licensed under GPL-3.0-or-later.
 
-EmoC is not affiliated with, endorsed by, sponsored by, authorized by, or
-officially connected to NetEase Cloud Music.
+EmoC is not affiliated with, endorsed by, sponsored by, authorized by, or officially connected to NetEase Cloud Music.

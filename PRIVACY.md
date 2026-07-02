@@ -1,48 +1,66 @@
-# Privacy Policy
+# 隐私说明 / Privacy Policy
 
-EmoC is a third-party, free Android client. It does not operate a custom
-analytics backend and does not sell, rent, or independently monetize user data.
+EmoC 是第三方、免费的 Android 客户端。它不运营独立分析后台，不出售、出租或独立变现用户数据。
 
-## Data Handled by the App
+EmoC is a third-party, free Android client. It does not operate a custom analytics backend and does not sell, rent, or independently monetize user data.
+
+## 本地处理的数据 / Data Handled by the App
+
+EmoC 可能会在你的设备本地保存以下数据：
 
 EmoC may store the following data locally on your device:
 
-- login/session state needed to keep you signed in;
-- cached playlist, recommendation, search, lyric, and playback metadata;
-- app settings such as theme mode, desktop lyrics settings, playback quality,
-  dynamic color, and cache preferences;
-- Android media-session state used by system playback controls.
+- 登录/会话状态，用于保持登录。
+  Login/session state needed to keep you signed in.
+- 首页、歌单、搜索、歌词和播放元数据缓存。
+  Cached playlist, recommendation, search, lyric, and playback metadata.
+- 主题、桌面歌词、播放音质、动态取色和缓存偏好等设置。
+  App settings such as theme mode, desktop lyrics settings, playback quality, dynamic color, and cache preferences.
+- Android 系统媒体控件所需的播放会话状态。
+  Android media-session state used by system playback controls.
 
-## Network Requests
+## 网络请求 / Network Requests
 
-Music account, playlist, search, lyric, cover, and playback-related requests are
-sent to NetEase Cloud Music services. These requests are governed by NetEase
-Cloud Music's own terms and privacy policy.
+账号、歌单、搜索、歌词、封面和播放相关请求会发送到网易云音乐服务。这些请求受网易云音乐自身服务条款和隐私政策约束。
+
+Music account, playlist, search, lyric, cover, and playback-related requests are sent to NetEase Cloud Music services. These requests are governed by NetEase Cloud Music's own terms and privacy policy.
+
+EmoC 不托管音乐文件、歌词、封面或账号服务。
 
 EmoC does not host music files, lyrics, cover art, or account services.
 
-## Permissions
+## 权限 / Permissions
+
+根据启用的功能，EmoC 可能会请求以下 Android 权限：
 
 Depending on enabled features, EmoC may request Android permissions such as:
 
-- network access for service requests;
-- notification/media-session access for system playback controls;
-- draw-over-other-apps permission for desktop lyrics.
+- 网络访问，用于服务请求。
+  Network access for service requests.
+- 通知/媒体会话访问，用于系统播放控件。
+  Notification/media-session access for system playback controls.
+- 悬浮窗权限，用于桌面歌词。
+  Draw-over-other-apps permission for desktop lyrics.
+
+桌面歌词权限只会在你开启桌面歌词功能时申请。
 
 Desktop lyrics permission is requested only when you enable the feature.
 
-## Local Cache
+## 本地缓存 / Local Cache
 
-Cached app data is used to improve startup speed and restore visible state after
-restart. You can clear cached content from the app settings page.
+缓存用于提升启动速度并在重启后恢复可见状态。你可以在应用设置中清除缓存内容。
 
-## Third-Party Status
+Cached app data is used to improve startup speed and restore visible state after restart. You can clear cached content from the app settings page.
 
-EmoC is not an official NetEase Cloud Music app. Do not enter credentials or use
-this app if you are not comfortable with a third-party client depending on the
-official website/session flow.
+## 第三方状态 / Third-Party Status
 
-## Contact
+EmoC 不是网易云音乐官方应用。如果你不希望第三方客户端依赖官网/会话流程，请不要在本应用中登录账号。
+
+EmoC is not an official NetEase Cloud Music app. Do not enter credentials or use this app if you are not comfortable with a third-party client depending on the official website/session flow.
+
+## 联系 / Contact
+
+项目公开后可通过 GitHub 仓库 issue 反馈：
 
 Use the GitHub repository issue tracker after the project is made public:
 
