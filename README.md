@@ -7,6 +7,8 @@
 [![平台 / Platform](https://img.shields.io/badge/platform-Android-34c759.svg)](#项目说明--about)
 [![Flutter](https://img.shields.io/badge/built%20with-Flutter-54c5f8.svg)](https://flutter.dev)
 
+喜欢的话请点上一个 star，非常感谢！！！
+
 ## 项目说明 / About
 
 EmoC 是一个 Flutter + Kotlin Android 客户端，聚焦首页推荐、歌单、搜索、播放控制、歌词、桌面歌词、动态取色和系统媒体控件。它不是音乐服务端，也不托管音乐、歌词或封面内容。
