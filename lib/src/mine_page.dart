@@ -710,9 +710,13 @@ void _confirmClearCache(BuildContext context, AppModel model) {
   );
 }
 
+const _projectUrl = 'https://github.com/yufenghub/EmoC';
+const _appVersionLabel = '1.0.0';
+
 void _openAboutSheet(BuildContext context, AppModel model) {
   showModalBottomSheet<void>(
     context: context,
+    isScrollControlled: true,
     useSafeArea: true,
     builder: (context) {
       final theme = Theme.of(context);
@@ -723,41 +727,89 @@ void _openAboutSheet(BuildContext context, AppModel model) {
           20,
           MediaQuery.viewPaddingOf(context).bottom + 20,
         ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'EmoC',
-              style: theme.textTheme.headlineSmall?.copyWith(
-                fontWeight: FontWeight.w900,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'EmoC',
+                style: theme.textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.w900,
+                ),
               ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              '第三方免费网易云音乐客户端',
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
+              const SizedBox(height: 6),
+              Text(
+                '第三方、免费的 Android 音乐客户端',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
               ),
-            ),
-            const SizedBox(height: 16),
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.link),
-              title: const Text('项目链接'),
-              subtitle: const Text('第三方项目链接，当前暂用网易云音乐官网'),
-              trailing: const Icon(Icons.open_in_new),
-              onTap: () =>
-                  unawaited(model.openExternalLink('https://music.163.com/')),
-            ),
-            TextButton(
-              onPressed: () => _openDisclaimerDialog(context),
-              child: const Text('免责条款'),
-            ),
-          ],
+              const SizedBox(height: 12),
+              Text(
+                'EmoC 使用 Flutter 和 Kotlin 构建，提供移动端歌单、搜索、播放控制、歌词、桌面歌词和系统媒体控件集成。'
+                '本软件不是网易云音乐官方产品，不提供或托管音乐内容。',
+                style: theme.textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 16),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.info_outline),
+                title: const Text('版本'),
+                subtitle: const Text(_appVersionLabel),
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.link),
+                title: const Text('项目链接'),
+                subtitle: const Text(_projectUrl),
+                trailing: const Icon(Icons.open_in_new),
+                onTap: () => unawaited(model.openExternalLink(_projectUrl)),
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.privacy_tip_outlined),
+                title: const Text('隐私说明'),
+                subtitle: const Text('说明本地缓存、账号会话和第三方服务请求'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _openPrivacyDialog(context),
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.gavel_outlined),
+                title: const Text('免责条款'),
+                subtitle: const Text('第三方免费项目，与网易云音乐官方无隶属关系'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _openDisclaimerDialog(context),
+              ),
+            ],
+          ),
         ),
       );
     },
+  );
+}
+
+void _openPrivacyDialog(BuildContext context) {
+  showDialog<void>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('隐私说明'),
+      content: const SingleChildScrollView(
+        child: Text(
+          'EmoC 不运营独立分析后台，不出售、出租或独立变现用户数据。\n\n'
+          '软件会在本机保存登录状态、播放列表缓存、歌词缓存、主题设置、桌面歌词设置和播放偏好，用于提升启动速度和恢复使用状态。\n\n'
+          '账号、搜索、歌单、歌词、封面和播放相关请求依赖网易云音乐服务，并受其服务条款与隐私政策约束。\n\n'
+          '桌面歌词悬浮窗权限只会在你开启桌面歌词功能时申请。',
+        ),
+      ),
+      actions: [
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('知道了'),
+        ),
+      ],
+    ),
   );
 }
 
@@ -766,8 +818,13 @@ void _openDisclaimerDialog(BuildContext context) {
     context: context,
     builder: (context) => AlertDialog(
       title: const Text('免责条款'),
-      content: const Text(
-        '本软件为第三方免费项目，与网易云音乐官方无隶属、授权或合作关系，仅用于个人学习与本地使用。音乐内容、歌词、封面和账号服务归网易云音乐及相关权利方所有。请遵守平台服务条款和当地法律法规，不要用于商业分发或侵权用途。',
+      content: const SingleChildScrollView(
+        child: Text(
+          'EmoC 是第三方、免费的开源项目，与网易云音乐官方无隶属、授权、赞助或合作关系。\n\n'
+          '音乐内容、歌词、封面、账号服务、商标和相关权利归网易云音乐及对应权利方所有。EmoC 不提供、上传、托管、镜像或分发受版权保护的音乐内容。\n\n'
+          '请遵守所在地法律法规、平台服务条款和内容权利要求。不要将 EmoC 表述为官方客户端，也不要用于侵权或商业误导用途。\n\n'
+          '本软件按现状提供，不承诺第三方服务的登录、播放、搜索、歌词或封面长期可用。',
+        ),
       ),
       actions: [
         FilledButton(
