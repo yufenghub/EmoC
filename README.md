@@ -1,6 +1,6 @@
 # EmoC
 
-> 第三方、免费的 Android 音乐客户端，用原生移动界面呈现网易云音乐账号下的日常听歌体验。<br>
+> 第三方、免费的 Android 网易云音乐客户端，用原生移动界面呈现网易云音乐账号下的日常听歌体验。<br>
 > A third-party, free Android music client with a native mobile-first UI.
 
 [![许可证 / License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-3f7bff.svg)](LICENSE)
