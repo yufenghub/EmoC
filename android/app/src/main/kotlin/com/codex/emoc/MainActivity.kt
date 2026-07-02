@@ -196,6 +196,9 @@ class MainActivity : FlutterActivity() {
                             .apply()
                         result.success(applied)
                     }
+                    "isDesktopLyricsActive" -> {
+                        result.success(desktopLyricsOverlay?.isActive() == true)
+                    }
                     "setDesktopLyricsStyle" -> {
                         val opacity = (call.argument<Double>("opacity") ?: 0.42).toFloat()
                         val fontSize = (call.argument<Double>("fontSize") ?: 18.0).toFloat()

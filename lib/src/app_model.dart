@@ -463,6 +463,7 @@ class AppModel extends ChangeNotifier {
 
   Future<void> refreshVisualStateAfterResume() async {
     await _refreshSystemThemeFromNative(notify: themeMode == 'system');
+    await _refreshDesktopLyricsAfterResume();
     if (dynamicColorEnabled) {
       if (_nativePlaybackActive) {
         await _syncNativePlayerState();
@@ -480,6 +481,25 @@ class AppModel extends ChangeNotifier {
       if (systemDarkMode == next) return;
       systemDarkMode = next;
       if (notify && themeMode == 'system') {
+        notifyListeners();
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _refreshDesktopLyricsAfterResume() async {
+    if (!desktopLyricsEnabled) return;
+    try {
+      final active = await NativeBridge.isDesktopLyricsActive().timeout(
+        const Duration(seconds: 1),
+        onTimeout: () => false,
+      );
+      if (active) {
+        await _applyDesktopLyricsStyle(force: true);
+        _syncDesktopLyrics(force: true);
+        return;
+      }
+      await _restoreDesktopLyricsOverlay();
+      if (!desktopLyricsEnabled) {
         notifyListeners();
       }
     } catch (_) {}
