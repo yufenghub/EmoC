@@ -127,6 +127,11 @@ class NativeBridge {
         false;
   }
 
+  static Future<bool> isDesktopLyricsActive() async {
+    return await _nativeChannel.invokeMethod<bool>('isDesktopLyricsActive') ??
+        false;
+  }
+
   static Future<void> setDesktopLyricsStyle({
     required double opacity,
     required double fontSize,
