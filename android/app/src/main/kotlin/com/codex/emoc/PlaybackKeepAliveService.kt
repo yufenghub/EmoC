@@ -12,6 +12,8 @@ import androidx.core.app.NotificationCompat
 
 class PlaybackKeepAliveService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
+    private var lastTitle = "EmoC"
+    private var lastArtist = "正在播放"
 
     override fun onCreate() {
         super.onCreate()
@@ -21,6 +23,8 @@ class PlaybackKeepAliveService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val title = intent?.getStringExtra(EXTRA_TITLE).orEmpty().ifBlank { "EmoC" }
         val artist = intent?.getStringExtra(EXTRA_ARTIST).orEmpty().ifBlank { "正在播放" }
+        lastTitle = title
+        lastArtist = artist
         startForeground(
             NOTIFICATION_ID,
             NotificationCompat.Builder(this, CHANNEL_ID)
@@ -36,6 +40,22 @@ class PlaybackKeepAliveService : Service() {
         )
         acquireWakeLock()
         return START_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        acquireWakeLock()
+        try {
+            val restartIntent = Intent(applicationContext, PlaybackKeepAliveService::class.java)
+                .putExtra(EXTRA_TITLE, lastTitle)
+                .putExtra(EXTRA_ARTIST, lastArtist)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                applicationContext.startForegroundService(restartIntent)
+            } else {
+                applicationContext.startService(restartIntent)
+            }
+        } catch (_: RuntimeException) {
+        }
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

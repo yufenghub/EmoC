@@ -132,6 +132,13 @@ class NativeBridge {
         false;
   }
 
+  static Future<Map<String, dynamic>> currentDesktopLyricsStyle() async {
+    final style = await _nativeChannel.invokeMapMethod<String, dynamic>(
+      'desktopLyricsStyle',
+    );
+    return style ?? const <String, dynamic>{};
+  }
+
   static Future<void> setDesktopLyricsStyle({
     required double opacity,
     required double fontSize,

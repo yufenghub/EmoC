@@ -3,8 +3,10 @@ package com.codex.emoc
 import android.animation.ArgbEvaluator
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
+import android.content.ComponentCallbacks
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -65,8 +67,20 @@ class DesktopLyricsOverlayController(private val context: Context) {
     private var renderedBackgroundColor = desktopBackgroundColor()
     private var renderedTextColor = textColor
     private var lastMinOverlayHeight = minOverlayHeight()
+    private var lastScreenBounds: ScreenBounds? = null
     private var appInForeground = false
+    private var configurationCallbacksRegistered = false
     private val hideHandleRunnable = Runnable { fadeHandleOut() }
+    private val configurationCallbacks = object : ComponentCallbacks {
+        override fun onConfigurationChanged(newConfig: Configuration) {
+            refreshLayoutForDisplayChange()
+            mainHandler.postDelayed({
+                refreshLayoutForDisplayChange()
+            }, 250L)
+        }
+
+        override fun onLowMemory() = Unit
+    }
 
     fun setEnabled(enabled: Boolean, requestPermission: Boolean): Boolean {
         if (!enabled) {
@@ -83,6 +97,17 @@ class DesktopLyricsOverlayController(private val context: Context) {
 
     fun isActive(): Boolean {
         return rootView != null && canDrawOverlays()
+    }
+
+    fun currentStyle(): Map<String, Any> {
+        return mapOf(
+            "active" to isActive(),
+            "followDynamicColor" to followDynamicColor,
+            "backgroundColor" to backgroundColor,
+            "textColor" to textColor,
+            "renderedBackgroundColor" to renderedBackgroundColor,
+            "renderedTextColor" to renderedTextColor
+        )
     }
 
     fun updateStyle(
@@ -124,6 +149,7 @@ class DesktopLyricsOverlayController(private val context: Context) {
 
     fun setAppInForeground(inForeground: Boolean) {
         appInForeground = inForeground
+        refreshLayoutForDisplayChange()
         applyForegroundVisibility(animated = true)
     }
 
@@ -135,6 +161,18 @@ class DesktopLyricsOverlayController(private val context: Context) {
                 .ifBlank { "用音乐安放此刻" }
         }
         lyricView?.text = currentText
+        refreshLayoutForDisplayChange()
+    }
+
+    fun refreshLayoutForDisplayChange() {
+        val params = layoutParams ?: return
+        val nextBounds = screenBounds()
+        val previousBounds = lastScreenBounds
+        if (previousBounds == nextBounds) return
+        lastScreenBounds = nextBounds
+        ensureReadableBounds(params, nextBounds)
+        updateLayout(params)
+        saveBounds(params)
     }
 
     fun release() {
@@ -161,6 +199,7 @@ class DesktopLyricsOverlayController(private val context: Context) {
     private fun show() {
         if (rootView != null) {
             applyStyle()
+            registerConfigurationCallbacks()
             return
         }
         val view = createView()
@@ -171,6 +210,7 @@ class DesktopLyricsOverlayController(private val context: Context) {
         applyStyle()
         try {
             windowManager.addView(view, params)
+            registerConfigurationCallbacks()
         } catch (_: Exception) {
             rootView = null
             backgroundView = null
@@ -181,11 +221,14 @@ class DesktopLyricsOverlayController(private val context: Context) {
     }
 
     private fun hide() {
-        val view = rootView ?: return
-        try {
-            windowManager.removeView(view)
-        } catch (_: Exception) {
+        val view = rootView
+        if (view != null) {
+            try {
+                windowManager.removeView(view)
+            } catch (_: Exception) {
+            }
         }
+        unregisterConfigurationCallbacks()
         backgroundAnimator?.cancel()
         backgroundAnimator = null
         textColorAnimator?.cancel()
@@ -199,11 +242,27 @@ class DesktopLyricsOverlayController(private val context: Context) {
         layoutParams = null
     }
 
+    private fun registerConfigurationCallbacks() {
+        if (configurationCallbacksRegistered) return
+        context.applicationContext.registerComponentCallbacks(configurationCallbacks)
+        configurationCallbacksRegistered = true
+    }
+
+    private fun unregisterConfigurationCallbacks() {
+        if (!configurationCallbacksRegistered) return
+        try {
+            context.applicationContext.unregisterComponentCallbacks(configurationCallbacks)
+        } catch (_: Exception) {
+        }
+        configurationCallbacksRegistered = false
+    }
+
     private data class ScreenBounds(val width: Int, val height: Int)
 
     private fun screenBounds(): ScreenBounds {
+        displayRealSize()?.let { return it }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val bounds = windowManager.currentWindowMetrics.bounds
+            val bounds = windowManager.maximumWindowMetrics.bounds
             return ScreenBounds(bounds.width().coerceAtLeast(1), bounds.height().coerceAtLeast(1))
         }
         val size = Point()
@@ -212,12 +271,32 @@ class DesktopLyricsOverlayController(private val context: Context) {
         return ScreenBounds(size.x.coerceAtLeast(1), size.y.coerceAtLeast(1))
     }
 
+    private fun displayRealSize(): ScreenBounds? {
+        val size = Point()
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                context.display?.getRealSize(size)
+            } else {
+                @Suppress("DEPRECATION")
+                windowManager.defaultDisplay.getRealSize(size)
+            }
+            if (size.x > 0 && size.y > 0) {
+                ScreenBounds(size.x, size.y)
+            } else {
+                null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun centeredX(width: Int, bounds: ScreenBounds): Int {
         return ((bounds.width - width) / 2).coerceAtLeast(0)
     }
 
     private fun createLayoutParams(): WindowManager.LayoutParams {
         val bounds = screenBounds()
+        lastScreenBounds = bounds
         val defaultWidth = 320.dp()
         val defaultHeight = minOverlayHeight()
         val minWidth = minOverlayWidth()
@@ -250,6 +329,14 @@ class DesktopLyricsOverlayController(private val context: Context) {
             gravity = Gravity.TOP or Gravity.START
             this.x = x
             this.y = y
+            applyCutoutPolicy(this)
+        }
+    }
+
+    private fun applyCutoutPolicy(params: WindowManager.LayoutParams) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            params.layoutInDisplayCutoutMode =
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
     }
 
@@ -453,6 +540,7 @@ class DesktopLyricsOverlayController(private val context: Context) {
         layoutParams?.let {
             ensureReadableBounds(it)
             it.flags = overlayFlags()
+            applyCutoutPolicy(it)
             updateLayout(it)
             saveBounds(it)
         }
@@ -613,7 +701,13 @@ class DesktopLyricsOverlayController(private val context: Context) {
     }
 
     private fun ensureReadableBounds(params: WindowManager.LayoutParams) {
-        val bounds = screenBounds()
+        ensureReadableBounds(params, screenBounds())
+    }
+
+    private fun ensureReadableBounds(
+        params: WindowManager.LayoutParams,
+        bounds: ScreenBounds
+    ) {
         val minWidth = minOverlayWidth()
         val minHeight = minOverlayHeight()
         val maxWidth = (bounds.width - 24.dp()).coerceAtLeast(minWidth)
@@ -649,7 +743,8 @@ class DesktopLyricsOverlayController(private val context: Context) {
     }
 
     private fun overlayFlags(): Int {
-        var flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        var flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
         if (locked) {
             flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         }

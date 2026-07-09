@@ -91,7 +91,19 @@ class MainActivity : FlutterActivity() {
 
     override fun onPause() {
         desktopLyricsOverlay?.setAppInForeground(false)
+        keepPlaybackServiceAliveIfNeeded()
         super.onPause()
+    }
+
+    override fun onStop() {
+        keepPlaybackServiceAliveIfNeeded()
+        super.onStop()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        activeActivity = WeakReference(this)
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -144,6 +156,7 @@ class MainActivity : FlutterActivity() {
                         player?.playWhenReady = false
                         player?.pause()
                         updateSystemMedia()
+                        PlaybackKeepAliveService.stop(this)
                         result.success(null)
                     }
                     "resume" -> {
@@ -198,6 +211,12 @@ class MainActivity : FlutterActivity() {
                     }
                     "isDesktopLyricsActive" -> {
                         result.success(desktopLyricsOverlay?.isActive() == true)
+                    }
+                    "desktopLyricsStyle" -> {
+                        result.success(
+                            desktopLyricsOverlay?.currentStyle()
+                                ?: emptyMap<String, Any>()
+                        )
                     }
                     "setDesktopLyricsStyle" -> {
                         val opacity = (call.argument<Double>("opacity") ?: 0.42).toFloat()
@@ -313,6 +332,10 @@ class MainActivity : FlutterActivity() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        desktopLyricsOverlay?.refreshLayoutForDisplayChange()
+        Handler(Looper.getMainLooper()).postDelayed({
+            desktopLyricsOverlay?.refreshLayoutForDisplayChange()
+        }, 250L)
         notifySystemThemeChanged()
     }
 
@@ -460,9 +483,6 @@ class MainActivity : FlutterActivity() {
             exoPlayer.setMediaSource(mediaSource)
             exoPlayer.prepare()
             exoPlayer.playWhenReady = true
-            if (!keepPreviousSystemMedia) {
-                updateSystemMedia()
-            }
         } catch (error: Exception) {
             releasePlayer()
             errorOnce("PLAYER_SOURCE_ERROR", "播放地址加载失败：${error.message}")
@@ -501,6 +521,7 @@ class MainActivity : FlutterActivity() {
                 player?.playWhenReady = false
                 player?.pause()
                 updateSystemMedia()
+                PlaybackKeepAliveService.stop(this)
                 notifyFlutter("pause")
             }
             SystemMediaController.ACTION_PLAY_PAUSE -> {
@@ -550,6 +571,18 @@ class MainActivity : FlutterActivity() {
             currentMs = if (playerPrepared) position else 0L,
             durationMs = if (playerPrepared) duration else 0L
         )
+        if (playing) {
+            PlaybackKeepAliveService.start(this, currentTrack)
+        }
+    }
+
+    private fun keepPlaybackServiceAliveIfNeeded() {
+        val current = player ?: return
+        val ended = current.playbackState == Player.STATE_ENDED
+        if (current.playWhenReady && !userPaused && !ended) {
+            PlaybackKeepAliveService.start(this, currentTrack)
+            updateSystemMedia()
+        }
     }
 
     private fun stateMap(
@@ -559,14 +592,26 @@ class MainActivity : FlutterActivity() {
         durationMs: Long,
         ended: Boolean = false
     ): Map<String, Any> {
-        return mapOf(
+        val state = mutableMapOf<String, Any>(
             "active" to active,
             "playing" to playing,
             "currentMs" to currentMs.coerceAtLeast(0L),
             "durationMs" to durationMs.coerceAtLeast(0L),
+            "songId" to currentTrack.songId,
+            "title" to currentTrack.title,
+            "artist" to currentTrack.artist,
             "coverUrl" to currentTrack.coverUrl,
             "ended" to ended
         )
+        val colorUrl = systemMediaController?.currentCoverColorUrl().orEmpty()
+        val colorSongId = systemMediaController?.currentCoverColorSongId().orEmpty()
+        val color = systemMediaController?.currentCoverColor()
+        if (color != null && (colorUrl.isNotEmpty() || colorSongId.isNotEmpty())) {
+            state["coverColor"] = color
+            state["coverColorUrl"] = colorUrl
+            state["coverColorSongId"] = colorSongId
+        }
+        return state
     }
 
     private fun requestHeaders(): Map<String, String> {
@@ -676,6 +721,7 @@ class MainActivity : FlutterActivity() {
         current.playWhenReady = false
         current.pause()
         updateSystemMedia()
+        PlaybackKeepAliveService.stop(this)
         notifyFlutter("pause")
     }
 
@@ -687,6 +733,7 @@ class MainActivity : FlutterActivity() {
         current.playWhenReady = false
         current.pause()
         updateSystemMedia()
+        PlaybackKeepAliveService.stop(this)
         notifyFlutter("headsetDisconnected")
     }
 

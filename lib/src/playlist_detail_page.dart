@@ -240,6 +240,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                   model: widget.model,
                   playlist: widget.playlist,
                   visibleSongs: visibleSongs,
+                  playbackSongs: songs,
                   sourceSongs: filteredSongs,
                   loading: widget.model.playlistLoading,
                   hasMore: _visibleSongCount < filteredSongs.length,
@@ -338,6 +339,7 @@ class LazyPlaylistSongList extends StatelessWidget {
     required this.model,
     required this.playlist,
     required this.visibleSongs,
+    required this.playbackSongs,
     required this.sourceSongs,
     required this.loading,
     required this.hasMore,
@@ -348,6 +350,7 @@ class LazyPlaylistSongList extends StatelessWidget {
   final AppModel model;
   final MirrorItem playlist;
   final List<MirrorItem> visibleSongs;
+  final List<MirrorItem> playbackSongs;
   final List<MirrorItem> sourceSongs;
   final bool loading;
   final bool hasMore;
@@ -398,6 +401,9 @@ class LazyPlaylistSongList extends StatelessWidget {
             );
           }
           final song = visibleSongs[index];
+          final playbackSource = playbackSongs.isNotEmpty
+              ? playbackSongs
+              : sourceSongs;
           return PlaylistSwipeSongTile(
             key: ValueKey(
               'playlist-song-${playlist.id}-${song.id}-${song.title}',
@@ -405,8 +411,8 @@ class LazyPlaylistSongList extends StatelessWidget {
             model: model,
             playlist: playlist,
             song: song,
-            sourceList: sourceSongs,
-            sourceIndex: _sourceIndexForSong(song, sourceSongs, index),
+            sourceList: playbackSource,
+            sourceIndex: _sourceIndexForSong(song, playbackSource, index),
           );
         },
       ),

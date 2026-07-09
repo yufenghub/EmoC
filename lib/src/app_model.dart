@@ -14,9 +14,15 @@ class AppModel extends ChangeNotifier {
   Timer? _playerTimer;
   Timer? _searchDebounce;
   Timer? _noticeHideTimer;
+  Timer? _themeModeReviewTimer;
+  Timer? _dynamicThemeGuardTimer;
+  Timer? _desktopLyricsColorReviewTimer;
+  bool _dynamicThemeGuardRefreshInProgress = false;
   int _playRequestId = 0;
   int _loginFlowGeneration = 0;
   int _snapshotRequestSerial = 0;
+  int _desktopLyricsColorReviewSerial = 0;
+  int _themeModeChangeSerial = 0;
   String _songDetailRequestKey = '';
   final Map<String, int> _activeSnapshotRequests = <String, int>{};
   final Map<int, Completer<void>> _snapshotWaiters = <int, Completer<void>>{};
@@ -130,9 +136,13 @@ class AppModel extends ChangeNotifier {
   int _dynamicColorSerial = 0;
   Timer? _dynamicColorDebounce;
   final Map<String, Color> _dynamicColorCache = <String, Color>{};
+  String _dynamicColorSource = 'daily';
+  String _pendingDynamicColorSource = 'daily';
+  int _dynamicColorSourceSerial = 0;
   String _lastDesktopLyricsPayloadKey = '';
   String _lastDesktopLyricsDetailRequestKey = '';
   String _lastDesktopLyricsStyleKey = '';
+  DateTime? _desktopLyricsStyleHoldUntil;
   bool _playlistAllowEmptySnapshot = false;
 
   bool isPlaylistPinned(MirrorItem playlist) =>
@@ -384,7 +394,10 @@ class AppModel extends ChangeNotifier {
     _playerTimer?.cancel();
     _searchDebounce?.cancel();
     _noticeHideTimer?.cancel();
+    _themeModeReviewTimer?.cancel();
     _dynamicColorDebounce?.cancel();
+    _dynamicThemeGuardTimer?.cancel();
+    _desktopLyricsColorReviewTimer?.cancel();
     for (final waiter in _snapshotWaiters.values) {
       if (!waiter.isCompleted) waiter.complete();
     }
@@ -449,26 +462,107 @@ class AppModel extends ChangeNotifier {
 
   Future<void> setThemeMode(String value) async {
     if (value != 'system' && value != 'light' && value != 'dark') return;
+    final serial = ++_themeModeChangeSerial;
+    _themeModeReviewTimer?.cancel();
     themeMode = value;
     if (value == 'system') {
-      await _refreshSystemThemeFromNative(notify: false);
+      unawaited(_refreshSystemThemeFromNative(notify: true));
     }
     _refreshDynamicThemeFromCurrentCover(force: true);
     notifyListeners();
-    try {
-      await NativeBridge.setString('themeMode', value);
-      await NativeBridge.setString('darkMode', (value == 'dark').toString());
-    } catch (_) {}
+    await _persistThemeModeValue(value, serial);
+    if (!_themeModeChangeIsCurrent(value, serial)) return;
+    _scheduleThemeModeReview(value, serial);
   }
 
   Future<void> refreshVisualStateAfterResume() async {
     await _refreshSystemThemeFromNative(notify: themeMode == 'system');
+    if (themeMode != 'system') {
+      await _verifyFixedThemeMode(themeMode);
+    }
     await _refreshDesktopLyricsAfterResume();
     if (dynamicColorEnabled) {
       if (_nativePlaybackActive) {
         await _syncNativePlayerState();
       }
-      _refreshDynamicThemeFromCurrentCover(force: true);
+      final syncedFromNative = await _refreshDynamicThemeFromNativePlayback(
+        force: true,
+      );
+      if (!syncedFromNative) {
+        _refreshDynamicThemeFromCurrentCover(force: true);
+      }
+      _scheduleDynamicThemeGuard();
+    }
+  }
+
+  bool _themeModeChangeIsCurrent(String expectedMode, int serial) {
+    return serial == _themeModeChangeSerial && themeMode == expectedMode;
+  }
+
+  Future<void> _persistThemeModeValue(String value, int serial) async {
+    await Future<void>.delayed(Duration.zero);
+    if (!_themeModeChangeIsCurrent(value, serial)) return;
+    try {
+      await NativeBridge.setString('themeMode', value);
+      if (!_themeModeChangeIsCurrent(value, serial)) return;
+      await NativeBridge.setString('darkMode', (value == 'dark').toString());
+    } catch (_) {}
+  }
+
+  void _scheduleThemeModeReview(String expectedMode, int serial) {
+    _themeModeReviewTimer?.cancel();
+    _themeModeReviewTimer = Timer(const Duration(milliseconds: 550), () {
+      if (!_themeModeChangeIsCurrent(expectedMode, serial)) return;
+      if (expectedMode == 'system') {
+        unawaited(_persistThemeModeValue(expectedMode, serial));
+      } else {
+        unawaited(_verifyFixedThemeMode(expectedMode, serial: serial));
+      }
+    });
+    unawaited(
+      Future<void>.delayed(const Duration(milliseconds: 1500), () {
+        if (!_themeModeChangeIsCurrent(expectedMode, serial)) return null;
+        if (expectedMode == 'system') {
+          return _persistThemeModeValue(expectedMode, serial);
+        }
+        return _verifyFixedThemeMode(expectedMode, serial: serial);
+      }),
+    );
+  }
+
+  Future<void> _verifyFixedThemeMode(String expectedMode, {int? serial}) async {
+    if (expectedMode != 'light' && expectedMode != 'dark') return;
+    if (serial != null && !_themeModeChangeIsCurrent(expectedMode, serial)) {
+      return;
+    }
+    var changed = false;
+    if (themeMode != expectedMode) {
+      themeMode = expectedMode;
+      changed = true;
+    }
+    try {
+      final stored = await NativeBridge.getString(
+        'themeMode',
+      ).timeout(const Duration(seconds: 1), onTimeout: () => null);
+      if (serial != null && !_themeModeChangeIsCurrent(expectedMode, serial)) {
+        return;
+      }
+      if (stored != expectedMode) {
+        await NativeBridge.setString('themeMode', expectedMode);
+      }
+      final expectedDark = (expectedMode == 'dark').toString();
+      final storedDark = await NativeBridge.getString(
+        'darkMode',
+      ).timeout(const Duration(seconds: 1), onTimeout: () => null);
+      if (serial != null && !_themeModeChangeIsCurrent(expectedMode, serial)) {
+        return;
+      }
+      if (storedDark != expectedDark) {
+        await NativeBridge.setString('darkMode', expectedDark);
+      }
+    } catch (_) {}
+    if (changed) {
+      notifyListeners();
     }
   }
 
@@ -489,16 +583,7 @@ class AppModel extends ChangeNotifier {
   Future<void> _refreshDesktopLyricsAfterResume() async {
     if (!desktopLyricsEnabled) return;
     try {
-      final active = await NativeBridge.isDesktopLyricsActive().timeout(
-        const Duration(seconds: 1),
-        onTimeout: () => false,
-      );
-      if (active) {
-        await _applyDesktopLyricsStyle(force: true);
-        _syncDesktopLyrics(force: true);
-        return;
-      }
-      await _restoreDesktopLyricsOverlay();
+      await _ensureDesktopLyricsOverlayActive(forceSync: true);
       if (!desktopLyricsEnabled) {
         notifyListeners();
       }
@@ -905,6 +990,162 @@ class AppModel extends ChangeNotifier {
     return songCoverCache[item.id] ?? '';
   }
 
+  bool _isSameSongCollection(List<MirrorItem> left, List<MirrorItem> right) {
+    if (identical(left, right)) return true;
+    if (left.isEmpty || right.isEmpty || left.length != right.length) {
+      return false;
+    }
+    bool sameAt(int index) =>
+        index >= 0 &&
+        index < left.length &&
+        index < right.length &&
+        _sameSong(left[index], right[index]);
+    final middle = left.length ~/ 2;
+    return sameAt(0) && sameAt(middle) && sameAt(left.length - 1);
+  }
+
+  String _dynamicColorSourceForPlayback(
+    List<MirrorItem> requestPlaylist,
+    List<MirrorItem>? fromList,
+  ) {
+    final source = fromList != null && fromList.isNotEmpty
+        ? fromList
+        : requestPlaylist;
+    if (_isSameSongCollection(source, dailySongs)) return 'daily';
+    if (_isSameSongCollection(source, playlistSongs)) return 'playlist';
+    if (selectedLibraryPlaylist != null) return 'playlist';
+    if (_dynamicColorSource == 'playlist' &&
+        _isSameSongCollection(source, currentPlaylist)) {
+      return 'playlist';
+    }
+    return 'daily';
+  }
+
+  bool _songStateMatches(
+    MirrorItem song, {
+    required String songId,
+    required String title,
+    required String artist,
+  }) {
+    if (songId.isNotEmpty && song.id == songId) return true;
+    final normalizedTitle = _normalizeForMatch(title);
+    if (normalizedTitle.isEmpty ||
+        _normalizeForMatch(song.title) != normalizedTitle) {
+      return false;
+    }
+    final normalizedArtist = _normalizeForMatch(artist);
+    if (normalizedArtist.isEmpty) return true;
+    return _normalizeForMatch(song.subtitle).contains(normalizedArtist) ||
+        normalizedArtist.contains(_normalizeForMatch(song.subtitle));
+  }
+
+  bool _songStateInList(
+    List<MirrorItem> songs, {
+    required String songId,
+    required String title,
+    required String artist,
+  }) {
+    if (songs.isEmpty) return false;
+    return songs.any(
+      (song) =>
+          _songStateMatches(song, songId: songId, title: title, artist: artist),
+    );
+  }
+
+  String _dynamicColorSourceForSongState({
+    required String songId,
+    required String title,
+    required String artist,
+  }) {
+    final matchesPlaylist =
+        selectedLibraryPlaylist != null ||
+        _songStateInList(
+          playlistSongs,
+          songId: songId,
+          title: title,
+          artist: artist,
+        ) ||
+        (_dynamicColorSource == 'playlist' &&
+            _songStateInList(
+              currentPlaylist,
+              songId: songId,
+              title: title,
+              artist: artist,
+            ));
+    if (matchesPlaylist) return 'playlist';
+    if (_songStateInList(
+      dailySongs,
+      songId: songId,
+      title: title,
+      artist: artist,
+    )) {
+      return 'daily';
+    }
+    return _dynamicColorSource;
+  }
+
+  String _knownCoverForSongState({
+    required String songId,
+    required String title,
+    required String artist,
+    String fallback = '',
+  }) {
+    if (songId.isNotEmpty) {
+      final cached = songCoverCache[songId] ?? '';
+      if (cached.startsWith('http')) return cached;
+    }
+    final sourceFirst = _dynamicColorSource == 'playlist'
+        ? <List<MirrorItem>>[playlistSongs, currentPlaylist, dailySongs]
+        : <List<MirrorItem>>[dailySongs, currentPlaylist, playlistSongs];
+    for (final songs in sourceFirst) {
+      for (final song in songs) {
+        if (!_songStateMatches(
+          song,
+          songId: songId,
+          title: title,
+          artist: artist,
+        )) {
+          continue;
+        }
+        final cover = coverFor(song);
+        if (cover.startsWith('http')) return cover;
+      }
+    }
+    final normalizedFallback = _absoluteMusicUrl(fallback).trim();
+    return normalizedFallback.startsWith('http') ? normalizedFallback : '';
+  }
+
+  void _setDynamicColorSource(String source) {
+    final next = source == 'playlist' ? 'playlist' : 'daily';
+    if (_dynamicColorSource == next) return;
+    _dynamicColorSource = next;
+    _dynamicColorSourceSerial += 1;
+    _dynamicColorSerial += 1;
+    _dynamicColorDebounce?.cancel();
+    _dynamicColorPendingCoverUrl = '';
+    _dynamicColorQueuedCoverUrl = '';
+    _dynamicColorQueuedSongId = '';
+    _lastDynamicColorRequestKey = '';
+    _dynamicColorFailedCoverUrl = '';
+    _dynamicColorFailedAt = null;
+  }
+
+  void _requestDynamicThemeFromCoverForSource(
+    String source,
+    String coverUrl, {
+    String songId = '',
+    bool force = false,
+  }) {
+    _setDynamicColorSource(source);
+    _requestDynamicThemeFromCover(coverUrl, songId: songId, force: force);
+  }
+
+  String _dynamicColorCacheKey(String coverUrl) =>
+      '$_dynamicColorSource|${_absoluteMusicUrl(coverUrl).trim()}';
+
+  String _dynamicColorRequestKey(String songId, String coverUrl) =>
+      '$_dynamicColorSource|$songId|$coverUrl';
+
   void _clearDynamicColorRequestState() {
     _dynamicColorDebounce?.cancel();
     _dynamicColorCoverUrl = '';
@@ -916,6 +1157,7 @@ class AppModel extends ChangeNotifier {
     _dynamicColorFailedCoverUrl = '';
     _dynamicColorFailedAt = null;
     _dynamicColorSerial += 1;
+    _dynamicColorSourceSerial += 1;
   }
 
   void _refreshDynamicThemeFromCurrentCover({bool force = false}) {
@@ -940,6 +1182,279 @@ class AppModel extends ChangeNotifier {
     }
   }
 
+  String _knownCoverForDynamicColor(MirrorItem song, {String fallback = ''}) {
+    return [
+      fallback,
+      coverFor(song),
+      song.imageUrl,
+      songCoverCache[song.id] ?? '',
+    ].firstWhere((url) => url.startsWith('http'), orElse: () => '');
+  }
+
+  void _scheduleManualDynamicThemeRefresh({
+    required int requestId,
+    required String coverUrl,
+    required String songId,
+    required String source,
+  }) {
+    final normalized = _absoluteMusicUrl(coverUrl).trim();
+    if (!dynamicColorEnabled || !normalized.startsWith('http')) return;
+
+    Future<void> refresh() async {
+      if (requestId != _playRequestId || !dynamicColorEnabled) return;
+      _requestDynamicThemeFromCoverForSource(
+        source,
+        normalized,
+        songId: songId,
+        force: true,
+      );
+    }
+
+    unawaited(refresh());
+    for (final delay in const [Duration(milliseconds: 450)]) {
+      unawaited(Future<void>.delayed(delay, refresh));
+    }
+  }
+
+  Future<bool> _refreshDynamicThemeFromNativePlayback({
+    bool force = false,
+    String sourceHint = '',
+  }) async {
+    if (!dynamicColorEnabled) return false;
+    try {
+      final state = await NativeBridge.playerState().timeout(
+        const Duration(milliseconds: 900),
+        onTimeout: () => const <String, dynamic>{},
+      );
+      if (state['active'] != true) return false;
+      final nativeCoverUrl = _absoluteMusicUrl(_stringOf(state['coverUrl']));
+      final nativeSongId = _stringOf(state['songId']);
+      final effectiveSongId = nativeSongId.isNotEmpty
+          ? nativeSongId
+          : (player.songId.isNotEmpty ? player.songId : displayPlayer.songId);
+      final effectiveTitle = _stringOf(state['title']).isNotEmpty
+          ? _stringOf(state['title'])
+          : (player.title.isNotEmpty ? player.title : displayPlayer.title);
+      final effectiveArtist = _stringOf(state['artist']).isNotEmpty
+          ? _stringOf(state['artist'])
+          : (player.artist.isNotEmpty ? player.artist : displayPlayer.artist);
+      final nativeDynamicSource = _dynamicColorSourceForSongState(
+        songId: effectiveSongId,
+        title: effectiveTitle,
+        artist: effectiveArtist,
+      );
+      _setDynamicColorSource(
+        sourceHint == 'playlist' ? 'playlist' : nativeDynamicSource,
+      );
+      final effectiveCoverUrl = _knownCoverForSongState(
+        songId: effectiveSongId,
+        title: effectiveTitle,
+        artist: effectiveArtist,
+        fallback: nativeCoverUrl,
+      );
+      if (!effectiveCoverUrl.startsWith('http')) return false;
+      if (effectiveSongId.isNotEmpty) {
+        songCoverCache = {
+          ...songCoverCache,
+          effectiveSongId: effectiveCoverUrl,
+        };
+      }
+      final coverChanged =
+          player.hasSong && player.coverUrl != effectiveCoverUrl;
+      if (coverChanged) {
+        player = _playerWith(
+          songId: effectiveSongId.isNotEmpty ? effectiveSongId : null,
+          coverUrl: effectiveCoverUrl,
+        );
+      }
+      if (force) {
+        await _updateDynamicThemeFromCover(
+          effectiveCoverUrl,
+          songId: effectiveSongId,
+          force: true,
+        );
+      } else {
+        _requestDynamicThemeFromCover(
+          effectiveCoverUrl,
+          songId: effectiveSongId,
+          force: coverChanged,
+        );
+      }
+      if (coverChanged) {
+        notifyListeners();
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _applyDynamicThemeColor(
+    Color color, {
+    String coverUrl = '',
+    String songId = '',
+    bool force = false,
+    bool syncDesktopLyrics = true,
+  }) async {
+    if (!dynamicColorEnabled) return;
+    final normalized = _absoluteMusicUrl(coverUrl).trim();
+    if (normalized.startsWith('http')) {
+      _dynamicColorCoverUrl = normalized;
+      _lastDynamicColorRequestKey = _dynamicColorRequestKey(songId, normalized);
+      _dynamicColorCache[_dynamicColorCacheKey(normalized)] = color;
+      if (_dynamicColorCache.length > 24) {
+        _dynamicColorCache.remove(_dynamicColorCache.keys.first);
+      }
+    }
+    if (songId.isNotEmpty) {
+      _dynamicColorSongId = songId;
+    }
+    _dynamicColorFailedCoverUrl = '';
+    _dynamicColorFailedAt = null;
+    if (themeSeedColor.toARGB32() == color.toARGB32()) {
+      if (force) {
+        if (syncDesktopLyrics && desktopLyricsEnabled) {
+          unawaited(_applyDesktopLyricsStyle(force: true));
+        }
+        _scheduleDynamicThemeGuard(color);
+        notifyListeners();
+      }
+      return;
+    }
+    themeSeedColor = color;
+    await NativeBridge.setString('themeSeedColor', color.toARGB32().toString());
+    if (syncDesktopLyrics && desktopLyricsEnabled) {
+      unawaited(_applyDesktopLyricsStyle(force: true));
+    }
+    _scheduleDynamicThemeGuard();
+    notifyListeners();
+  }
+
+  void _scheduleDynamicThemeGuard([Color? expectedColor]) {
+    _dynamicThemeGuardTimer?.cancel();
+    if (!dynamicColorEnabled) return;
+    if (_dynamicThemeGuardRefreshInProgress) return;
+    final requestId = _playRequestId;
+    final source = _dynamicColorSource;
+    final displayed = displayPlayer;
+    final songId = displayed.songId.isNotEmpty
+        ? displayed.songId
+        : (player.songId.isNotEmpty
+              ? player.songId
+              : _lastPlayerWithSong.songId);
+    final coverUrl = [
+      displayed.coverUrl,
+      songCoverCache[displayed.songId] ?? '',
+      player.coverUrl,
+      songCoverCache[player.songId] ?? '',
+      _lastPlayerWithSong.coverUrl,
+      songCoverCache[_lastPlayerWithSong.songId] ?? '',
+    ].firstWhere((url) => url.startsWith('http'), orElse: () => '');
+    final expectedArgb = expectedColor?.toARGB32();
+    _dynamicThemeGuardTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (!dynamicColorEnabled || requestId != _playRequestId) return;
+      if (expectedArgb != null && themeSeedColor.toARGB32() != expectedArgb) {
+        return;
+      }
+      _dynamicThemeGuardRefreshInProgress = true;
+      unawaited(
+        _refreshDynamicThemeFromNativePlayback(force: true, sourceHint: source)
+            .then((ok) async {
+              if (ok ||
+                  !dynamicColorEnabled ||
+                  requestId != _playRequestId ||
+                  !coverUrl.startsWith('http')) {
+                return;
+              }
+              _setDynamicColorSource(source);
+              await _updateDynamicThemeFromCover(
+                coverUrl,
+                songId: songId,
+                force: true,
+              );
+            })
+            .whenComplete(() {
+              _dynamicThemeGuardRefreshInProgress = false;
+            }),
+      );
+    });
+  }
+
+  bool get _desktopLyricsStyleHoldActive {
+    final until = _desktopLyricsStyleHoldUntil;
+    return until != null && DateTime.now().isBefore(until);
+  }
+
+  void _holdDesktopLyricsDynamicStyle() {
+    if (!desktopLyricsEnabled ||
+        !desktopLyricsFollowDynamicColor ||
+        !dynamicColorEnabled) {
+      return;
+    }
+    _desktopLyricsStyleHoldUntil = DateTime.now().add(
+      const Duration(milliseconds: 1150),
+    );
+  }
+
+  void _scheduleInterfaceColorReviewFromDesktopLyrics(int requestId) {
+    if (!dynamicColorEnabled ||
+        !desktopLyricsEnabled ||
+        !desktopLyricsFollowDynamicColor) {
+      return;
+    }
+    final token = ++_desktopLyricsColorReviewSerial;
+    _desktopLyricsColorReviewTimer?.cancel();
+    _desktopLyricsColorReviewTimer = Timer(const Duration(seconds: 1), () {
+      unawaited(
+        _reviewInterfaceColorFromDesktopLyrics(
+          requestId: requestId,
+          token: token,
+        ),
+      );
+    });
+  }
+
+  Color? _nativeOpaqueColor(dynamic value) {
+    if (value is! num) return null;
+    final raw = value.toInt() & 0xFFFFFFFF;
+    return Color(0xFF000000 | (raw & 0x00FFFFFF));
+  }
+
+  Future<void> _reviewInterfaceColorFromDesktopLyrics({
+    required int requestId,
+    required int token,
+  }) async {
+    if (token != _desktopLyricsColorReviewSerial ||
+        requestId != _playRequestId ||
+        !dynamicColorEnabled ||
+        !desktopLyricsEnabled ||
+        !desktopLyricsFollowDynamicColor) {
+      return;
+    }
+    _desktopLyricsStyleHoldUntil = null;
+    await _applyDesktopLyricsStyle(force: true, ignoreHold: true);
+    await Future<void>.delayed(const Duration(milliseconds: 260));
+    if (token != _desktopLyricsColorReviewSerial ||
+        requestId != _playRequestId) {
+      return;
+    }
+    final style = await NativeBridge.currentDesktopLyricsStyle().timeout(
+      const Duration(milliseconds: 700),
+      onTimeout: () => const <String, dynamic>{},
+    );
+    if (style['active'] != true) return;
+    final desktopColor =
+        _nativeOpaqueColor(style['backgroundColor']) ??
+        _nativeOpaqueColor(style['renderedBackgroundColor']);
+    if (desktopColor == null) return;
+    await _applyDynamicThemeColor(
+      desktopColor,
+      songId: player.songId,
+      force: true,
+      syncDesktopLyrics: false,
+    );
+  }
+
   void _requestDynamicThemeFromCover(
     String coverUrl, {
     String songId = '',
@@ -947,25 +1462,18 @@ class AppModel extends ChangeNotifier {
   }) {
     final normalized = _absoluteMusicUrl(coverUrl).trim();
     if (!dynamicColorEnabled || !normalized.startsWith('http')) return;
-    final requestKey = '$songId|$normalized';
+    final requestKey = _dynamicColorRequestKey(songId, normalized);
     if (!force && requestKey == _lastDynamicColorRequestKey) return;
-    final cached = _dynamicColorCache[normalized];
+    final cached = _dynamicColorCache[_dynamicColorCacheKey(normalized)];
     if (cached != null) {
-      _lastDynamicColorRequestKey = requestKey;
-      _dynamicColorCoverUrl = normalized;
-      if (songId.isNotEmpty) _dynamicColorSongId = songId;
-      if (cached.toARGB32() != themeSeedColor.toARGB32()) {
-        themeSeedColor = cached;
-        unawaited(
-          NativeBridge.setString(
-            'themeSeedColor',
-            cached.toARGB32().toString(),
-          ),
-        );
-        notifyListeners();
-      } else if (force && desktopLyricsEnabled) {
-        unawaited(_applyDesktopLyricsStyle(force: true));
-      }
+      unawaited(
+        _applyDynamicThemeColor(
+          cached,
+          coverUrl: normalized,
+          songId: songId,
+          force: force,
+        ),
+      );
       return;
     }
     if (songId.isNotEmpty && songId != _dynamicColorSongId) {
@@ -987,7 +1495,6 @@ class AppModel extends ChangeNotifier {
       _dynamicColorDebounce?.cancel();
       _dynamicColorQueuedCoverUrl = '';
       _dynamicColorQueuedSongId = '';
-      _lastDynamicColorRequestKey = requestKey;
       unawaited(
         _updateDynamicThemeFromCover(normalized, songId: songId, force: true),
       );
@@ -1000,7 +1507,6 @@ class AppModel extends ChangeNotifier {
       final queuedCover = _dynamicColorQueuedCoverUrl;
       final queuedSongId = _dynamicColorQueuedSongId;
       if (queuedCover.isEmpty) return;
-      _lastDynamicColorRequestKey = '$queuedSongId|$queuedCover';
       unawaited(
         _updateDynamicThemeFromCover(queuedCover, songId: queuedSongId),
       );
@@ -1028,10 +1534,16 @@ class AppModel extends ChangeNotifier {
       return;
     }
     final serial = ++_dynamicColorSerial;
+    final sourceSerial = _dynamicColorSourceSerial;
+    final source = _dynamicColorSource;
     _dynamicColorPendingCoverUrl = normalized;
     try {
       final color = await _dominantCoverColor(normalized);
-      if (serial != _dynamicColorSerial) return;
+      if (serial != _dynamicColorSerial ||
+          sourceSerial != _dynamicColorSourceSerial ||
+          source != _dynamicColorSource) {
+        return;
+      }
       if (color == null) {
         _dynamicColorFailedCoverUrl = normalized;
         _dynamicColorFailedAt = DateTime.now();
@@ -1041,29 +1553,22 @@ class AppModel extends ChangeNotifier {
       _dynamicColorFailedAt = null;
       _dynamicColorCoverUrl = normalized;
       if (songId.isNotEmpty) _dynamicColorSongId = songId;
-      _dynamicColorCache[normalized] = color;
-      if (_dynamicColorCache.length > 24) {
-        _dynamicColorCache.remove(_dynamicColorCache.keys.first);
-      }
-      if (themeSeedColor.toARGB32() == color.toARGB32()) {
-        if (force && desktopLyricsEnabled) {
-          unawaited(_applyDesktopLyricsStyle(force: true));
-        }
-        return;
-      }
-      themeSeedColor = color;
-      await NativeBridge.setString(
-        'themeSeedColor',
-        color.toARGB32().toString(),
+      await _applyDynamicThemeColor(
+        color,
+        coverUrl: normalized,
+        songId: songId,
+        force: force,
       );
-      notifyListeners();
     } catch (_) {
-      if (serial == _dynamicColorSerial) {
+      if (serial == _dynamicColorSerial &&
+          sourceSerial == _dynamicColorSourceSerial &&
+          source == _dynamicColorSource) {
         _dynamicColorFailedCoverUrl = normalized;
         _dynamicColorFailedAt = DateTime.now();
       }
     } finally {
-      if (_dynamicColorPendingCoverUrl == normalized) {
+      if (sourceSerial == _dynamicColorSourceSerial &&
+          _dynamicColorPendingCoverUrl == normalized) {
         _dynamicColorPendingCoverUrl = '';
       }
     }
@@ -1246,9 +1751,82 @@ class AppModel extends ChangeNotifier {
           continue;
         }
       }
+      final pageCover = await _resolveCoverFromSongPage(client, songId, cookie);
+      if (pageCover.startsWith('http')) {
+        songCoverCache = {...songCoverCache, songId: pageCover};
+        return pageCover;
+      }
     } catch (_) {
     } finally {
       client.close(force: true);
+    }
+    return '';
+  }
+
+  Future<String> _resolveCoverFromSongPage(
+    HttpClient client,
+    String songId,
+    String cookie,
+  ) async {
+    final uris = [
+      Uri.https('music.163.com', '/song', {'id': songId}),
+      Uri.https('y.music.163.com', '/m/song', {'id': songId}),
+    ];
+    final patterns = <RegExp>[
+      RegExp(
+        '<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)',
+      ),
+      RegExp(
+        '<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']',
+      ),
+      RegExp('picUrl["\']?\\s*[:=]\\s*["\']([^"\']+)'),
+      RegExp('coverUrl["\']?\\s*[:=]\\s*["\']([^"\']+)'),
+      RegExp(
+        '<img[^>]+(?:data-src|src)=["\']([^"\']+)["\'][^>]*class=["\'][^"\']*j-img',
+      ),
+      RegExp(
+        '<img[^>]+class=["\'][^"\']*j-img[^"\']*["\'][^>]+(?:data-src|src)=["\']([^"\']+)',
+      ),
+    ];
+    for (final uri in uris) {
+      try {
+        final request = await client
+            .getUrl(uri)
+            .timeout(const Duration(seconds: 5));
+        request.headers.set(HttpHeaders.userAgentHeader, _desktopUserAgent);
+        request.headers.set(
+          HttpHeaders.acceptHeader,
+          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        );
+        request.headers.set(
+          HttpHeaders.refererHeader,
+          'https://music.163.com/',
+        );
+        if (cookie.isNotEmpty) {
+          request.headers.set(HttpHeaders.cookieHeader, cookie);
+        }
+        final response = await request.close().timeout(
+          const Duration(seconds: 6),
+        );
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          continue;
+        }
+        final body = await response
+            .transform(utf8.decoder)
+            .join()
+            .timeout(const Duration(seconds: 6));
+        for (final pattern in patterns) {
+          final match = pattern.firstMatch(body);
+          final raw = match?.group(1);
+          if (raw == null || raw.isEmpty) continue;
+          final cover = _absoluteMusicUrl(
+            raw.replaceAll(r'\/', '/').replaceAll('&amp;', '&'),
+          );
+          if (cover.startsWith('http')) return cover;
+        }
+      } catch (_) {
+        continue;
+      }
     }
     return '';
   }
@@ -1754,7 +2332,20 @@ class AppModel extends ChangeNotifier {
     final cJson = jsonEncode(
       ids.map((id) => <String, dynamic>{'id': id}).toList(),
     );
+    final firstId = ids.length == 1 ? _stringOf(ids.first) : '';
     return [
+      if (firstId.isNotEmpty)
+        Uri.https('music.163.com', '/api/song/detail/', {
+          'id': firstId,
+          'ids': idsJson,
+          'timestamp': now,
+        }),
+      if (firstId.isNotEmpty)
+        Uri.https('music.163.com', '/api/song/detail', {
+          'id': firstId,
+          'ids': idsJson,
+          'timestamp': now,
+        }),
       Uri.https('music.163.com', '/api/song/detail', {
         'ids': idsJson,
         'timestamp': now,
@@ -2046,6 +2637,13 @@ class AppModel extends ChangeNotifier {
       requestPlaylist,
       sourceIndex: sourceIndex,
     );
+    final playbackDynamicSource = _dynamicColorSourceForPlayback(
+      requestPlaylist,
+      fromList,
+    );
+    _setDynamicColorSource(playbackDynamicSource);
+    _pendingDynamicColorSource = playbackDynamicSource;
+    _holdDesktopLyricsDynamicStyle();
     _pendingSong = song;
     _pendingPlaylist = requestPlaylist;
     _pendingSongIndex = requestIndex;
@@ -2064,6 +2662,15 @@ class AppModel extends ChangeNotifier {
     _noticeHideTimer?.cancel();
     noticeMessage = '';
     status = '正在请求播放地址：${song.title}';
+    final knownCoverUrl = _knownCoverForDynamicColor(song);
+    if (knownCoverUrl.startsWith('http')) {
+      _scheduleManualDynamicThemeRefresh(
+        requestId: requestId,
+        coverUrl: knownCoverUrl,
+        songId: song.id,
+        source: playbackDynamicSource,
+      );
+    }
     notifyListeners();
     unawaited(_runJavaScript(_silenceOfficialAudioScript));
     if (requestId != _playRequestId) return;
@@ -2468,6 +3075,34 @@ class AppModel extends ChangeNotifier {
       final durationMs = _intOf(state['durationMs']);
       final nativePlaying = state['playing'] == true;
       final nativeCoverUrl = _absoluteMusicUrl(_stringOf(state['coverUrl']));
+      final nativeSongId = _stringOf(state['songId']);
+      final effectiveSongId = nativeSongId.isNotEmpty
+          ? nativeSongId
+          : player.songId;
+      final nativeTitle = _stringOf(state['title']);
+      final nativeArtist = _stringOf(state['artist']);
+      final effectiveTitle = nativeTitle.isNotEmpty
+          ? nativeTitle
+          : player.title;
+      final effectiveArtist = nativeArtist.isNotEmpty
+          ? nativeArtist
+          : player.artist;
+      _setDynamicColorSource(
+        _dynamicColorSourceForSongState(
+          songId: effectiveSongId,
+          title: effectiveTitle,
+          artist: effectiveArtist,
+        ),
+      );
+      final effectiveCoverUrl = _knownCoverForSongState(
+        songId: effectiveSongId,
+        title: effectiveTitle,
+        artist: effectiveArtist,
+        fallback: nativeCoverUrl,
+      );
+      final nativeCoverChanged =
+          effectiveCoverUrl.startsWith('http') &&
+          effectiveCoverUrl != player.coverUrl;
       final nativeEnded =
           state['ended'] == true ||
           (durationMs > 0 &&
@@ -2489,9 +3124,10 @@ class AppModel extends ChangeNotifier {
         _playIntentPlaying = null;
       }
       player = _playerWith(
+        songId: effectiveSongId.isNotEmpty ? effectiveSongId : null,
         playing: effectivePlaying,
-        coverUrl: nativeCoverUrl.startsWith('http')
-            ? nativeCoverUrl
+        coverUrl: effectiveCoverUrl.startsWith('http')
+            ? effectiveCoverUrl
             : player.coverUrl,
         currentSeconds: (currentMs / 1000).floor(),
         durationSeconds: durationMs > 0
@@ -2502,7 +3138,23 @@ class AppModel extends ChangeNotifier {
             ? durationMs
             : player.durationMilliseconds,
       );
-      _requestDynamicThemeFromCover(nativeCoverUrl, songId: player.songId);
+      if (effectiveCoverUrl.startsWith('http') && effectiveSongId.isNotEmpty) {
+        songCoverCache = {
+          ...songCoverCache,
+          effectiveSongId: effectiveCoverUrl,
+        };
+      }
+      final shouldForceDynamic =
+          nativeCoverChanged ||
+          (effectiveSongId.isNotEmpty &&
+              effectiveSongId != _dynamicColorSongId) ||
+          (effectiveCoverUrl.startsWith('http') &&
+              effectiveCoverUrl != _dynamicColorCoverUrl);
+      _requestDynamicThemeFromCover(
+        effectiveCoverUrl,
+        songId: effectiveSongId,
+        force: shouldForceDynamic,
+      );
       notifyListeners();
       if (nativeEnded && !_localPauseRequested) {
         _handleNativeTrackEnded();
@@ -2740,16 +3392,26 @@ class AppModel extends ChangeNotifier {
     _pendingPreviousNativeActive = false;
     _pendingAutoAdvance = false;
     _pendingSkipDirection = 1;
+    _pendingDynamicColorSource = _dynamicColorSource;
   }
 
-  PlayerSnapshot _snapshotForSong(MirrorItem song, {bool playing = false}) {
+  PlayerSnapshot _snapshotForSong(
+    MirrorItem song, {
+    bool playing = false,
+    String songId = '',
+    String coverUrl = '',
+  }) {
+    final effectiveSongId = songId.isNotEmpty ? songId : song.id;
+    final effectiveCoverUrl = coverUrl.startsWith('http')
+        ? coverUrl
+        : coverFor(song);
     return PlayerSnapshot(
       visible: true,
-      songId: song.id,
+      songId: effectiveSongId,
       title: song.title,
       artist: song.subtitle,
       source: '',
-      coverUrl: coverFor(song),
+      coverUrl: effectiveCoverUrl,
       playing: playing,
       currentSeconds: 0,
       durationSeconds: 0,
@@ -2813,20 +3475,35 @@ class AppModel extends ChangeNotifier {
     return songId == pending.id;
   }
 
-  void _commitPendingSong() {
+  void _commitPendingSong({
+    String resolvedCoverUrl = '',
+    String resolvedSongId = '',
+  }) {
     final pending = _pendingSong;
     if (pending == null) return;
+    final effectiveSongId = resolvedSongId.isNotEmpty
+        ? resolvedSongId
+        : pending.id;
     if (_pendingPlaylist.isNotEmpty) {
       currentPlaylist = _pendingPlaylist;
     }
     currentSongIndex = _pendingSongIndex;
     unawaited(_saveCurrentPlaylistCache());
     playerBarVisible = true;
-    player = _snapshotForSong(pending);
-    if (pending.id.isNotEmpty && player.coverUrl.startsWith('http')) {
-      songCoverCache = {...songCoverCache, pending.id: player.coverUrl};
+    player = _snapshotForSong(
+      pending,
+      songId: effectiveSongId,
+      coverUrl: resolvedCoverUrl,
+    );
+    if (effectiveSongId.isNotEmpty && player.coverUrl.startsWith('http')) {
+      songCoverCache = {...songCoverCache, effectiveSongId: player.coverUrl};
     }
-    _requestDynamicThemeFromCover(player.coverUrl, songId: pending.id);
+    _requestDynamicThemeFromCoverForSource(
+      _pendingDynamicColorSource,
+      player.coverUrl,
+      songId: effectiveSongId,
+      force: resolvedCoverUrl.startsWith('http'),
+    );
   }
 
   void _restoreBeforePendingSong() {
@@ -3536,18 +4213,43 @@ class AppModel extends ChangeNotifier {
   }
 
   Future<void> _restoreDesktopLyricsOverlay() async {
+    await _ensureDesktopLyricsOverlayActive(forceSync: true);
+  }
+
+  Future<bool> _ensureDesktopLyricsOverlayActive({
+    bool forceSync = false,
+  }) async {
+    if (!desktopLyricsEnabled) return false;
     try {
-      final applied = await NativeBridge.setDesktopLyricsEnabled(
-        true,
-        requestPermission: false,
+      final active = await NativeBridge.isDesktopLyricsActive().timeout(
+        const Duration(seconds: 1),
+        onTimeout: () => false,
       );
-      desktopLyricsEnabled = applied;
-      if (!applied) {
-        await NativeBridge.setString('desktopLyricsEnabled', 'false');
-      } else {
+      if (!active) {
+        await _applyDesktopLyricsStyle(force: true, ignoreHold: true);
+        final applied = await NativeBridge.setDesktopLyricsEnabled(
+          true,
+          requestPermission: false,
+        ).catchError((_) => false);
+        desktopLyricsEnabled = applied;
+        await NativeBridge.setString(
+          'desktopLyricsEnabled',
+          desktopLyricsEnabled.toString(),
+        );
+        if (!applied) {
+          _lastDesktopLyricsPayloadKey = '';
+          return false;
+        }
+      } else if (forceSync) {
+        await _applyDesktopLyricsStyle(force: true, ignoreHold: true);
+      }
+      if (forceSync) {
         _syncDesktopLyrics(force: true);
       }
-    } catch (_) {}
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<void> _probeStartupLoginState() async {
@@ -3571,9 +4273,15 @@ class AppModel extends ChangeNotifier {
     unawaited(openSmsLogin());
   }
 
-  Future<void> _applyDesktopLyricsStyle({bool force = false}) {
+  Future<void> _applyDesktopLyricsStyle({
+    bool force = false,
+    bool ignoreHold = false,
+  }) {
     final useDynamicColor =
         desktopLyricsFollowDynamicColor && dynamicColorEnabled;
+    if (useDynamicColor && !ignoreHold && _desktopLyricsStyleHoldActive) {
+      return Future<void>.value();
+    }
     final backgroundColor = useDynamicColor
         ? themeSeedColor
         : desktopLyricsBackgroundColor;
@@ -3593,9 +4301,15 @@ class AppModel extends ChangeNotifier {
       textColor.toARGB32(),
     ].join('|');
     if (!force && styleKey == _lastDesktopLyricsStyleKey) {
+      if (useDynamicColor) {
+        _scheduleDynamicThemeGuard(backgroundColor);
+      }
       return Future<void>.value();
     }
     _lastDesktopLyricsStyleKey = styleKey;
+    if (useDynamicColor) {
+      _scheduleDynamicThemeGuard(backgroundColor);
+    }
     return NativeBridge.setDesktopLyricsStyle(
       opacity: desktopLyricsOpacity,
       fontSize: desktopLyricsFontSize,
@@ -4475,17 +5189,38 @@ class AppModel extends ChangeNotifier {
         );
       }
       final pendingSong = _pendingSong;
+      final pendingDynamicColorSource = _pendingDynamicColorSource;
+      var resolvedCoverUrl = '';
+      var resolvedSongId = songId;
       if (pendingSong != null) {
-        final coverUrl = await _resolvePlaybackCover(
+        resolvedSongId = pendingSong.id.isNotEmpty ? pendingSong.id : songId;
+        resolvedCoverUrl = await _resolvePlaybackCover(
           pendingSong,
           _absoluteMusicUrl(_stringOf(data['coverUrl'])),
         );
-        if (coverUrl.startsWith('http') && pendingSong.id.isNotEmpty) {
-          songCoverCache = {...songCoverCache, pendingSong.id: coverUrl};
+        if (resolvedCoverUrl.startsWith('http') && resolvedSongId.isNotEmpty) {
+          songCoverCache = {
+            ...songCoverCache,
+            resolvedSongId: resolvedCoverUrl,
+          };
         }
-        _requestDynamicThemeFromCover(coverUrl, songId: pendingSong.id);
+        _requestDynamicThemeFromCoverForSource(
+          pendingDynamicColorSource,
+          resolvedCoverUrl,
+          songId: resolvedSongId,
+          force: resolvedCoverUrl.startsWith('http'),
+        );
+        _scheduleManualDynamicThemeRefresh(
+          requestId: requestId,
+          coverUrl: resolvedCoverUrl,
+          songId: resolvedSongId,
+          source: pendingDynamicColorSource,
+        );
       }
-      _commitPendingSong();
+      _commitPendingSong(
+        resolvedCoverUrl: resolvedCoverUrl,
+        resolvedSongId: resolvedSongId,
+      );
       _nativePlaybackActive = true;
       await NativeBridge.playUrl(url, player);
       if (requestId > 0 && requestId != _playRequestId) return;
@@ -4496,6 +5231,12 @@ class AppModel extends ChangeNotifier {
       status = '正在播放：${player.title}';
       _clearPendingPlaybackRequest();
       notifyListeners();
+      if (desktopLyricsEnabled) {
+        unawaited(_ensureDesktopLyricsOverlayActive(forceSync: true));
+      }
+      _scheduleInterfaceColorReviewFromDesktopLyrics(
+        requestId > 0 ? requestId : _playRequestId,
+      );
       await refreshPlayerState();
     } catch (error) {
       if (requestId > 0 && requestId != _playRequestId) return;
@@ -4528,9 +5269,31 @@ class AppModel extends ChangeNotifier {
       return;
     }
     final fallback = songDetail?.song ?? player.asMirrorItem();
-    songDetail = SongDetail.fromJson(data, fallback);
+    final detail = SongDetail.fromJson(data, fallback);
+    songDetail = detail;
     songDetailLoading = false;
-    status = songDetail!.lyricLines.isEmpty ? '歌曲暂无歌词' : '已加载完整歌词';
+    status = detail.lyricLines.isEmpty ? '歌曲暂无歌词' : '已加载完整歌词';
+    final detailCover = [
+      detail.coverUrl,
+      detail.song.imageUrl,
+    ].firstWhere((url) => url.startsWith('http'), orElse: () => '');
+    if (detailCover.startsWith('http') && _songDetailMatchesPlayer(player)) {
+      final detailSongId = detail.song.id.isNotEmpty
+          ? detail.song.id
+          : player.songId;
+      if (detailSongId.isNotEmpty) {
+        songCoverCache = {...songCoverCache, detailSongId: detailCover};
+      }
+      final coverChanged = player.coverUrl != detailCover;
+      if (coverChanged) {
+        player = _playerWith(coverUrl: detailCover);
+      }
+      _requestDynamicThemeFromCover(
+        detailCover,
+        songId: detailSongId,
+        force: coverChanged,
+      );
+    }
     notifyListeners();
   }
 
@@ -4592,7 +5355,9 @@ class AppModel extends ChangeNotifier {
         _lastSavedPlayerCacheKey = cacheKey;
         unawaited(_savePlayerCache(player));
       }
-      _requestDynamicThemeFromCover(player.coverUrl, songId: player.songId);
+      if (!_nativePlaybackActive) {
+        _requestDynamicThemeFromCover(player.coverUrl, songId: player.songId);
+      }
     }
     if (desktopLyricsEnabled) {
       unawaited(_applyDesktopLyricsStyle());
