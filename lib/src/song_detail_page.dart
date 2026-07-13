@@ -43,7 +43,10 @@ class _SongDetailPageState extends State<SongDetailPage> {
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: widget.model,
+      animation: Listenable.merge([
+        widget.model,
+        widget.model.playbackRevision,
+      ]),
       builder: (context, _) {
         final player = widget.model.player.hasSong
             ? widget.model.player
@@ -250,60 +253,18 @@ class PlayerQueueSheet extends StatelessWidget {
                   Expanded(
                     child: model.queueLoading
                         ? const LoadingPanel(text: '正在加载播放列表')
-                        : LayoutBuilder(
-                            builder: (context, constraints) {
-                              final queueSongs = model.playerQueue.isEmpty
+                        : QueueSongList(
+                            songs: model.playerQueue.isEmpty
+                                ? model.currentPlaylist
+                                : model.playerQueue,
+                            currentIndex: _queueCurrentIndexFromModel(
+                              songs: model.playerQueue.isEmpty
                                   ? model.currentPlaylist
-                                  : model.playerQueue;
-                              final currentIndex = _queueCurrentIndexFromModel(
-                                songs: queueSongs,
-                                model: model,
-                              );
-                              final lyric = model.queueLyricLines.isEmpty
-                                  ? const EmptyPanel(
-                                      icon: Icons.lyrics_outlined,
-                                      text: '暂无滚动歌词',
-                                    )
-                                  : LyricsBlock(lines: model.queueLyricLines);
-                              if (constraints.maxWidth >= 700) {
-                                return Row(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Expanded(
-                                      child: QueueSongList(
-                                        songs: queueSongs,
-                                        currentIndex: currentIndex,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 16),
-                                    Expanded(
-                                      child: SingleChildScrollView(
-                                        child: lyric,
-                                      ),
-                                    ),
-                                  ],
-                                );
-                              }
-                              return Column(
-                                children: [
-                                  Expanded(
-                                    child: QueueSongList(
-                                      songs: queueSongs,
-                                      currentIndex: currentIndex,
-                                    ),
-                                  ),
-                                  if (model.queueLyricLines.isNotEmpty) ...[
-                                    const SizedBox(height: 12),
-                                    SizedBox(
-                                      height: 170,
-                                      child: SingleChildScrollView(
-                                        child: lyric,
-                                      ),
-                                    ),
-                                  ],
-                                ],
-                              );
-                            },
+                                  : model.playerQueue,
+                              model: model,
+                            ),
+                            dynamicColorSource:
+                                model._activePlaybackDynamicSource,
                           ),
                   ),
                 ],
@@ -320,11 +281,13 @@ class QueueSongList extends StatefulWidget {
   const QueueSongList({
     required this.songs,
     required this.currentIndex,
+    required this.dynamicColorSource,
     super.key,
   });
 
   final List<MirrorItem> songs;
   final int currentIndex;
+  final String dynamicColorSource;
 
   @override
   State<QueueSongList> createState() => _QueueSongListState();
@@ -395,11 +358,12 @@ class _QueueSongListState extends State<QueueSongList> {
       itemBuilder: (context, index) {
         return Padding(
           padding: const EdgeInsets.only(bottom: 8),
-          child: SongTile(
+          child: PreparedSongTile(
             song: widget.songs[index],
             sourceList: widget.songs,
             sourceIndex: index,
             active: index == widget.currentIndex,
+            dynamicColorSource: widget.dynamicColorSource,
           ),
         );
       },

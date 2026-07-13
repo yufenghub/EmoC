@@ -7,6 +7,25 @@ const _onPageReadyScript = r'''
       window.__EMOC_INSTALL_MEDIA_BLOCK__ = function (targetWindow) {
         try {
           targetWindow = targetWindow || window;
+          if (!targetWindow.__EMOC_REALTIME_MEDIA_BLOCKED__) {
+            targetWindow.__EMOC_REALTIME_MEDIA_BLOCKED__ = true;
+            try { targetWindow.RTCPeerConnection = undefined; } catch (e) {}
+            try { targetWindow.webkitRTCPeerConnection = undefined; } catch (e) {}
+            try { targetWindow.AudioContext = undefined; } catch (e) {}
+            try { targetWindow.webkitAudioContext = undefined; } catch (e) {}
+            try {
+              var devices = targetWindow.navigator && targetWindow.navigator.mediaDevices;
+              if (devices) {
+                devices.getUserMedia = function () {
+                  return Promise.reject(new DOMException('Blocked by EmoC', 'NotAllowedError'));
+                };
+                devices.getDisplayMedia = function () {
+                  return Promise.reject(new DOMException('Blocked by EmoC', 'NotAllowedError'));
+                };
+                devices.enumerateDevices = function () { return Promise.resolve([]); };
+              }
+            } catch (e) {}
+          }
           var proto = targetWindow.HTMLMediaElement && targetWindow.HTMLMediaElement.prototype;
           if (!proto || proto.__EMOC_PLAY_BLOCKED__) return;
           proto.__EMOC_ORIGINAL_PLAY__ = proto.play;
@@ -359,6 +378,9 @@ const _pollOfficialQrScript = r'''
   })();
 ''';
 
+// Retained as a compatibility fallback for older official WebView sessions.
+// The current login flow uses SmsLoginApiClient directly.
+// ignore: unused_element
 const _smsCaptchaSentScript = r'''
   (async function () {
     var payload = window.__EMOC_SMS_PAYLOAD__ || {};
@@ -460,6 +482,9 @@ const _smsCaptchaSentScript = r'''
   })();
 ''';
 
+// Retained as a compatibility fallback for older official WebView sessions.
+// The current login flow uses SmsLoginApiClient directly.
+// ignore: unused_element
 const _smsLoginScript = r'''
   (async function () {
     var payload = window.__EMOC_SMS_PAYLOAD__ || {};
@@ -600,7 +625,7 @@ const _smsLoginScript = r'''
         }
       }
       if (verified && /enc|ENC/.test(last)) {
-        return { ok: false, message: '验证码已校验，但官网登录接口拒绝当前设备参数（ENC）' };
+        return { ok: false, message: '验证码已校验，但登录服务拒绝当前设备参数（ENC）' };
       }
       return { ok: false, message: last };
     }

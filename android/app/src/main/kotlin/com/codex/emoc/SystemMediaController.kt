@@ -38,6 +38,7 @@ class SystemMediaController(
         fun onPrevious()
         fun onNext()
         fun onSeekTo(positionMs: Long)
+        fun onCoverColor(songId: String, coverUrl: String, color: Int)
     }
 
     private val notificationManager =
@@ -60,11 +61,18 @@ class SystemMediaController(
     private var currentMs = 0L
     private var durationMs = 0L
     private var lastCoverUrl = ""
+    private var loadedCoverUrl = ""
+    private var loadingCoverUrl = ""
+    private var coverFailedAtMs = 0L
+    private var coverRetryCount = 0
     private var coverBitmap: Bitmap? = null
     private var coverColor: Int? = null
     private var coverColorUrl = ""
     private var coverColorSongId = ""
     private val appIconBitmap: Bitmap? by lazy { loadAppIconBitmap() }
+
+    @Volatile
+    private var released = false
 
     init {
         createNotificationChannel()
@@ -76,6 +84,7 @@ class SystemMediaController(
         currentMs: Long,
         durationMs: Long
     ) {
+        if (released) return
         val previousSongId = this.metadata.songId
         val songChanged = metadata.songId.isNotBlank() && metadata.songId != previousSongId
         this.metadata = metadata
@@ -100,9 +109,18 @@ class SystemMediaController(
     }
 
     fun release() {
+        if (released) return
+        released = true
         cancel()
         session.release()
         coverExecutor.shutdownNow()
+        coverBitmap?.let { bitmap ->
+            if (bitmap !== appIconBitmap && !bitmap.isRecycled) bitmap.recycle()
+        }
+        coverBitmap = null
+        appIconBitmap?.let { bitmap ->
+            if (!bitmap.isRecycled) bitmap.recycle()
+        }
     }
 
     fun currentCoverColor(): Int? {
@@ -150,7 +168,7 @@ class SystemMediaController(
                     PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
                     PlaybackStateCompat.ACTION_SEEK_TO
             )
-            .setState(state, currentMs, 1.0f)
+            .setState(state, currentMs, if (playing) 1.0f else 0.0f)
             .build()
         val mediaMetadata = MediaMetadataCompat.Builder()
             .putString(MediaMetadataCompat.METADATA_KEY_MEDIA_ID, metadata.songId)
@@ -212,25 +230,64 @@ class SystemMediaController(
     }
 
     private fun updateCoverIfNeeded(url: String) {
-        if (url == lastCoverUrl) return
+        val now = System.currentTimeMillis()
+        if (url == lastCoverUrl) {
+            if (loadedCoverUrl == url || loadingCoverUrl == url) return
+            if (coverFailedAtMs > 0L && now - coverFailedAtMs < 5_000L) return
+        }
+        if (url != lastCoverUrl) coverRetryCount = 0
         lastCoverUrl = url
         coverColor = null
         coverColorUrl = ""
         coverColorSongId = ""
         if (!url.startsWith("http")) {
-            coverBitmap = null
+            loadingCoverUrl = ""
             return
         }
+        loadingCoverUrl = url
         coverExecutor.execute {
-            val bitmap = runCatching { downloadBitmap(url) }.getOrNull()
+            val bitmap = runCatching { downloadBitmapWithFallback(url) }.getOrNull()
             val color = bitmap?.let { dominantColorFromBitmap(it) }
             mainHandler.post {
-                if (url != lastCoverUrl) return@post
+                if (released) {
+                    bitmap?.let { if (!it.isRecycled) it.recycle() }
+                    return@post
+                }
+                if (url != lastCoverUrl) {
+                    bitmap?.let { if (!it.isRecycled) it.recycle() }
+                    return@post
+                }
+                loadingCoverUrl = ""
                 if (bitmap != null) {
+                    val previous = coverBitmap
                     coverBitmap = bitmap
+                    loadedCoverUrl = url
+                    coverFailedAtMs = 0L
+                    coverRetryCount = 0
+                    if (
+                        previous != null &&
+                        previous !== bitmap &&
+                        previous !== appIconBitmap &&
+                        !previous.isRecycled
+                    ) {
+                        previous.recycle()
+                    }
                     coverColor = color
                     coverColorUrl = if (color != null) url else ""
                     coverColorSongId = if (color != null) metadata.songId else ""
+                    if (color != null) {
+                        callbacks.onCoverColor(metadata.songId, url, color)
+                    }
+                } else {
+                    coverFailedAtMs = System.currentTimeMillis()
+                    coverRetryCount += 1
+                    if (coverRetryCount <= 3) {
+                        mainHandler.postDelayed({
+                            if (!released && lastCoverUrl == url) {
+                                updateCoverIfNeeded(url)
+                            }
+                        }, 5_200L * coverRetryCount)
+                    }
                 }
                 updateSession()
                 showNotification()
@@ -266,6 +323,32 @@ class SystemMediaController(
         connection.inputStream.use { stream ->
             return BitmapFactory.decodeStream(stream)
         }
+    }
+
+    private fun downloadBitmapWithFallback(rawUrl: String): Bitmap? {
+        val secureUrl = if (rawUrl.startsWith("http://")) {
+            rawUrl.replaceFirst("http://", "https://")
+        } else {
+            rawUrl
+        }
+        val baseUrl = secureUrl.substringBefore('?')
+        val candidates = linkedSetOf(
+            "$baseUrl?param=360y360",
+            "$baseUrl?param=180y180",
+            secureUrl,
+            baseUrl
+        )
+        for (hostIndex in 1..4) {
+            val hostUrl = secureUrl.replace(Regex("p\\d\\.music\\.126\\.net"), "p$hostIndex.music.126.net")
+            val hostBase = hostUrl.substringBefore('?')
+            candidates.add("$hostBase?param=360y360")
+            candidates.add(hostUrl)
+        }
+        for (candidate in candidates) {
+            val bitmap = runCatching { downloadBitmap(candidate) }.getOrNull()
+            if (bitmap != null) return bitmap
+        }
+        return null
     }
 
     private fun dominantColorFromBitmap(bitmap: Bitmap): Int? {

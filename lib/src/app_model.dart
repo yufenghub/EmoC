@@ -4,11 +4,15 @@ class AppModel extends ChangeNotifier {
   AppModel()
     : systemDarkMode =
           ui.PlatformDispatcher.instance.platformBrightness ==
-          ui.Brightness.dark;
+          ui.Brightness.dark {
+    _artworkPipeline = SongArtworkPipeline(this);
+    _playlistModule = PlaylistModule(this);
+  }
 
   static const String _desktopUserAgent =
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
   WebViewController? webController;
   Timer? _loginTimer;
   Timer? _playerTimer;
@@ -17,12 +21,19 @@ class AppModel extends ChangeNotifier {
   Timer? _themeModeReviewTimer;
   Timer? _dynamicThemeGuardTimer;
   Timer? _desktopLyricsColorReviewTimer;
+  Timer? _coverCacheNotifyTimer;
+  Timer? _coverCachePersistTimer;
+  Timer? _currentPlaylistPersistTimer;
+  Timer? _playlistRevealPersistTimer;
   bool _dynamicThemeGuardRefreshInProgress = false;
   int _playRequestId = 0;
   int _loginFlowGeneration = 0;
   int _snapshotRequestSerial = 0;
   int _desktopLyricsColorReviewSerial = 0;
   int _themeModeChangeSerial = 0;
+  late final SongArtworkPipeline _artworkPipeline;
+  late final PlaylistModule _playlistModule;
+  final PlaybackOrderController _playbackOrder = PlaybackOrderController();
   String _songDetailRequestKey = '';
   final Map<String, int> _activeSnapshotRequests = <String, int>{};
   final Map<int, Completer<void>> _snapshotWaiters = <int, Completer<void>>{};
@@ -46,6 +57,7 @@ class AppModel extends ChangeNotifier {
   bool playerBarVisible = false;
   bool allowMixedAudio = false;
   bool dynamicColorEnabled = false;
+  bool showSongCovers = true;
   bool desktopLyricsEnabled = false;
   bool desktopLyricsLocked = false;
   bool desktopLyricsMultiLine = false;
@@ -89,8 +101,14 @@ class AppModel extends ChangeNotifier {
   List<String> pinnedPlaylistIds = const [];
   final Map<String, List<MirrorItem>> _playlistSongCache =
       <String, List<MirrorItem>>{};
+  final Map<String, int> _playlistRevealCounts = <String, int>{};
   Map<String, String> songCoverCache = <String, String>{};
+  final Map<String, Future<String>> _songCoverRequests =
+      <String, Future<String>>{};
+  final List<Completer<void>> _songCoverWaiters = <Completer<void>>[];
+  int _activeSongCoverRequests = 0;
   PlayerSnapshot player = PlayerSnapshot.empty;
+  final ValueNotifier<int> playbackRevision = ValueNotifier<int>(0);
   PlayerSnapshot _lastPlayerWithSong = PlayerSnapshot.empty;
   PlayerSnapshot? _loginGatePlayerBackup;
   bool _loginGatePlayerBarVisibleBackup = false;
@@ -128,6 +146,7 @@ class AppModel extends ChangeNotifier {
   String _dynamicColorCoverUrl = '';
   String _dynamicColorSongId = '';
   String _dynamicColorPendingCoverUrl = '';
+  String _dynamicColorPendingRequestKey = '';
   String _dynamicColorQueuedCoverUrl = '';
   String _dynamicColorQueuedSongId = '';
   String _lastDynamicColorRequestKey = '';
@@ -138,6 +157,14 @@ class AppModel extends ChangeNotifier {
   final Map<String, Color> _dynamicColorCache = <String, Color>{};
   String _dynamicColorSource = 'daily';
   String _pendingDynamicColorSource = 'daily';
+  String _activePlaybackDynamicSource = 'daily';
+  String _activePlaybackDynamicSongId = '';
+  String _dynamicColorTargetSongId = '';
+  String _nativeDynamicColorSongId = '';
+  int? _nativeDynamicColorArgb;
+  String _playlistDynamicColorSongId = '';
+  int? _playlistDynamicColorArgb;
+  String _playlistDynamicColorCoverUrl = '';
   int _dynamicColorSourceSerial = 0;
   String _lastDesktopLyricsPayloadKey = '';
   String _lastDesktopLyricsDetailRequestKey = '';
@@ -231,6 +258,15 @@ class AppModel extends ChangeNotifier {
     } catch (_) {
       dynamicColorEnabled = false;
       themeSeedColor = const Color(0xFF3F7BFF);
+    }
+    try {
+      showSongCovers =
+          await NativeBridge.getString(
+            'showSongCovers',
+          ).timeout(const Duration(seconds: 2), onTimeout: () => null) !=
+          'false';
+    } catch (_) {
+      showSongCovers = true;
     }
     try {
       desktopLyricsEnabled =
@@ -377,7 +413,16 @@ class AppModel extends ChangeNotifier {
       rememberLogin = true;
     }
     await _restoreSavedAccounts();
+    await _restorePlaylistRevealCounts();
     await _restoreContentCache();
+    if (showSongCovers) {
+      final startupArtwork = <MirrorItem>[
+        ...dailySongs.take(12),
+        ...currentPlaylist.take(12),
+        if (displayPlayer.hasSong) displayPlayer.asMirrorItem(),
+      ];
+      unawaited(prepareSongArtworkBatch(startupArtwork));
+    }
     ready = true;
     notifyListeners();
     await Future<void>.delayed(const Duration(milliseconds: 700));
@@ -390,6 +435,7 @@ class AppModel extends ChangeNotifier {
 
   @override
   void dispose() {
+    _smsLoginApiClient.dispose();
     _loginTimer?.cancel();
     _playerTimer?.cancel();
     _searchDebounce?.cancel();
@@ -398,6 +444,15 @@ class AppModel extends ChangeNotifier {
     _dynamicColorDebounce?.cancel();
     _dynamicThemeGuardTimer?.cancel();
     _desktopLyricsColorReviewTimer?.cancel();
+    _coverCacheNotifyTimer?.cancel();
+    _coverCachePersistTimer?.cancel();
+    _currentPlaylistPersistTimer?.cancel();
+    _playlistRevealPersistTimer?.cancel();
+    for (final waiter in _songCoverWaiters) {
+      if (!waiter.isCompleted) waiter.complete();
+    }
+    _songCoverWaiters.clear();
+    playbackRevision.dispose();
     for (final waiter in _snapshotWaiters.values) {
       if (!waiter.isCompleted) waiter.complete();
     }
@@ -465,13 +520,13 @@ class AppModel extends ChangeNotifier {
     final serial = ++_themeModeChangeSerial;
     _themeModeReviewTimer?.cancel();
     themeMode = value;
+    notifyListeners();
     if (value == 'system') {
       unawaited(_refreshSystemThemeFromNative(notify: true));
     }
-    _refreshDynamicThemeFromCurrentCover(force: true);
-    notifyListeners();
     await _persistThemeModeValue(value, serial);
     if (!_themeModeChangeIsCurrent(value, serial)) return;
+    notifyListeners();
     _scheduleThemeModeReview(value, serial);
   }
 
@@ -514,7 +569,7 @@ class AppModel extends ChangeNotifier {
     _themeModeReviewTimer = Timer(const Duration(milliseconds: 550), () {
       if (!_themeModeChangeIsCurrent(expectedMode, serial)) return;
       if (expectedMode == 'system') {
-        unawaited(_persistThemeModeValue(expectedMode, serial));
+        unawaited(_verifySystemThemeMode(serial));
       } else {
         unawaited(_verifyFixedThemeMode(expectedMode, serial: serial));
       }
@@ -523,11 +578,19 @@ class AppModel extends ChangeNotifier {
       Future<void>.delayed(const Duration(milliseconds: 1500), () {
         if (!_themeModeChangeIsCurrent(expectedMode, serial)) return null;
         if (expectedMode == 'system') {
-          return _persistThemeModeValue(expectedMode, serial);
+          return _verifySystemThemeMode(serial);
         }
         return _verifyFixedThemeMode(expectedMode, serial: serial);
       }),
     );
+  }
+
+  Future<void> _verifySystemThemeMode(int serial) async {
+    if (!_themeModeChangeIsCurrent('system', serial)) return;
+    await _persistThemeModeValue('system', serial);
+    if (!_themeModeChangeIsCurrent('system', serial)) return;
+    await _refreshSystemThemeFromNative(notify: false);
+    if (_themeModeChangeIsCurrent('system', serial)) notifyListeners();
   }
 
   Future<void> _verifyFixedThemeMode(String expectedMode, {int? serial}) async {
@@ -561,9 +624,7 @@ class AppModel extends ChangeNotifier {
         await NativeBridge.setString('darkMode', expectedDark);
       }
     } catch (_) {}
-    if (changed) {
-      notifyListeners();
-    }
+    if (changed || themeMode == expectedMode) notifyListeners();
   }
 
   Future<void> _refreshSystemThemeFromNative({required bool notify}) async {
@@ -768,6 +829,67 @@ class AppModel extends ChangeNotifier {
     } catch (_) {}
   }
 
+  Future<void> _restorePlaylistRevealCounts() async {
+    try {
+      final source = await NativeBridge.getString(
+        'playlistRevealCounts',
+      ).timeout(const Duration(seconds: 2), onTimeout: () => null);
+      if (_stringOf(source).isEmpty) return;
+      final decoded = jsonDecode(source!);
+      if (decoded is! Map) return;
+      _playlistRevealCounts.clear();
+      for (final entry in decoded.entries) {
+        final playlistId = entry.key.toString().trim();
+        final rawCount = entry.value;
+        final count = rawCount is num
+            ? rawCount.toInt()
+            : int.tryParse(rawCount.toString()) ?? 0;
+        if (playlistId.isEmpty || count <= 0) continue;
+        _playlistRevealCounts[playlistId] = count.clamp(1, 2000).toInt();
+        if (_playlistRevealCounts.length >= 100) break;
+      }
+    } catch (_) {}
+  }
+
+  int playlistRevealCount(String playlistId) {
+    if (playlistId.isEmpty) return 0;
+    return _playlistRevealCounts[playlistId] ?? 0;
+  }
+
+  void rememberPlaylistRevealCount(String playlistId, int count) {
+    if (playlistId.isEmpty || count <= 0) return;
+    final normalized = count.clamp(1, 2000).toInt();
+    if ((_playlistRevealCounts[playlistId] ?? 0) >= normalized) return;
+    if (!_playlistRevealCounts.containsKey(playlistId) &&
+        _playlistRevealCounts.length >= 100) {
+      _playlistRevealCounts.remove(_playlistRevealCounts.keys.first);
+    }
+    _playlistRevealCounts[playlistId] = normalized;
+    _schedulePlaylistRevealCountsSave();
+  }
+
+  void _schedulePlaylistRevealCountsSave() {
+    _playlistRevealPersistTimer?.cancel();
+    _playlistRevealPersistTimer = Timer(const Duration(milliseconds: 350), () {
+      _playlistRevealPersistTimer = null;
+      unawaited(_persistPlaylistRevealCounts());
+    });
+  }
+
+  Future<void> _persistPlaylistRevealCounts() async {
+    try {
+      await NativeBridge.setString(
+        'playlistRevealCounts',
+        jsonEncode(_playlistRevealCounts),
+      );
+    } catch (_) {}
+  }
+
+  void _forgetPlaylistRevealCount(String playlistId) {
+    if (_playlistRevealCounts.remove(playlistId) == null) return;
+    _schedulePlaylistRevealCountsSave();
+  }
+
   Future<void> _restoreContentCache() async {
     try {
       final daily = await NativeBridge.getString(
@@ -785,6 +907,9 @@ class AppModel extends ChangeNotifier {
       final cachedPlaylistIndex = await NativeBridge.getString(
         'cacheCurrentSongIndex',
       ).timeout(const Duration(seconds: 2), onTimeout: () => null);
+      final cachedPlaylistSource = await NativeBridge.getString(
+        'cacheCurrentPlaylistSource',
+      ).timeout(const Duration(seconds: 2), onTimeout: () => null);
       if (_stringOf(daily).isNotEmpty) {
         dailySongs = _decodeItems(daily!);
         _rememberCovers(dailySongs);
@@ -793,7 +918,11 @@ class AppModel extends ChangeNotifier {
         _setLibraryPlaylists(_decodeItems(library!), updateBase: true);
       }
       if (_stringOf(cachedPlaylist).isNotEmpty) {
-        _restoreCurrentPlaylistCache(cachedPlaylist!, cachedPlaylistIndex);
+        _restoreCurrentPlaylistCache(
+          cachedPlaylist!,
+          cachedPlaylistIndex,
+          cachedPlaylistSource,
+        );
       }
       if (_stringOf(cachedPlayer).isNotEmpty) {
         final restored = PlayerSnapshot.fromJson(
@@ -818,6 +947,8 @@ class AppModel extends ChangeNotifier {
                 : player.mode,
           );
           _lastPlayerWithSong = player;
+          _activePlaybackDynamicSongId = restored.songId;
+          _dynamicColorTargetSongId = restored.songId;
           playerBarVisible = true;
           _lastSavedPlayerCacheKey = _playerCacheKey(player);
           unawaited(NativeBridge.restorePausedMedia(player));
@@ -826,15 +957,25 @@ class AppModel extends ChangeNotifier {
     } catch (_) {}
   }
 
-  void _restoreCurrentPlaylistCache(String source, String? cachedIndex) {
+  void _restoreCurrentPlaylistCache(
+    String source,
+    String? cachedIndex,
+    String? cachedDynamicSource,
+  ) {
     final restored = _decodeItems(source);
     if (restored.isEmpty) return;
     final index = int.tryParse(cachedIndex ?? '') ?? -1;
     currentPlaylist = restored;
     playerQueue = restored;
     currentSongIndex = index >= 0 && index < restored.length ? index : -1;
+    _activePlaybackDynamicSource = cachedDynamicSource == 'playlist'
+        ? 'playlist'
+        : 'daily';
+    _pendingDynamicColorSource = _activePlaybackDynamicSource;
+    _dynamicColorSource = _activePlaybackDynamicSource;
     _rememberCovers(restored);
-    _lastSavedPlaylistCacheKey = _playlistCacheKey(restored, currentSongIndex);
+    _lastSavedPlaylistCacheKey =
+        '$_activePlaybackDynamicSource|${_playlistCacheKey(restored, currentSongIndex)}';
   }
 
   Future<void> _saveItemsCache(String key, List<MirrorItem> items) async {
@@ -842,9 +983,30 @@ class AppModel extends ChangeNotifier {
     try {
       await NativeBridge.setString(
         key,
-        jsonEncode(items.take(120).map((item) => item.toJson()).toList()),
+        jsonEncode(
+          _itemsWithKnownCovers(
+            items,
+          ).take(120).map((item) => item.toJson()).toList(),
+        ),
       );
     } catch (_) {}
+  }
+
+  List<MirrorItem> _itemsWithKnownCovers(List<MirrorItem> items) {
+    return items
+        .map((item) {
+          final cover = coverFor(item);
+          if (!cover.startsWith('http') || cover == item.imageUrl) return item;
+          return MirrorItem(
+            domId: item.domId,
+            kind: item.kind,
+            title: item.title,
+            subtitle: item.subtitle,
+            imageUrl: cover,
+            href: item.href,
+          );
+        })
+        .toList(growable: false);
   }
 
   String _playerCacheKey(PlayerSnapshot snapshot) {
@@ -876,15 +1038,66 @@ class AppModel extends ChangeNotifier {
     final items = currentPlaylist.isNotEmpty ? currentPlaylist : playerQueue;
     if (items.isEmpty) return;
     final index = currentPlaylist.isNotEmpty ? currentSongIndex : -1;
-    final cacheKey = _playlistCacheKey(items, index);
+    final cacheKey =
+        '$_activePlaybackDynamicSource|${_playlistCacheKey(items, index)}';
     if (cacheKey == _lastSavedPlaylistCacheKey) return;
     _lastSavedPlaylistCacheKey = cacheKey;
     try {
       await NativeBridge.setString(
         'cacheCurrentPlaylist',
-        jsonEncode(items.take(1200).map((item) => item.toJson()).toList()),
+        jsonEncode(
+          _itemsWithKnownCovers(
+            items,
+          ).take(1200).map((item) => item.toJson()).toList(),
+        ),
       );
       await NativeBridge.setString('cacheCurrentSongIndex', index.toString());
+      await NativeBridge.setString(
+        'cacheCurrentPlaylistSource',
+        _activePlaybackDynamicSource,
+      );
+    } catch (_) {}
+  }
+
+  void _scheduleCurrentPlaylistCacheSave({
+    Duration delay = const Duration(milliseconds: 420),
+    bool includeUpdatedCovers = false,
+  }) {
+    if (includeUpdatedCovers) _lastSavedPlaylistCacheKey = '';
+    _currentPlaylistPersistTimer?.cancel();
+    _currentPlaylistPersistTimer = Timer(delay, () {
+      _currentPlaylistPersistTimer = null;
+      unawaited(_saveCurrentPlaylistCache());
+    });
+  }
+
+  Future<List<MirrorItem>> _restoreRecentPlaylistSongsCache(
+    String playlistId,
+  ) async {
+    if (playlistId.isEmpty) return const [];
+    try {
+      final cachedId = await NativeBridge.getString('cacheRecentPlaylistId');
+      if (cachedId != playlistId) return const [];
+      final source = await NativeBridge.getString('cacheRecentPlaylistSongs');
+      return _decodeItems(source ?? '');
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  Future<void> _saveRecentPlaylistSongsCache(
+    String playlistId,
+    List<MirrorItem> items,
+  ) async {
+    if (playlistId.isEmpty) return;
+    try {
+      final payload = jsonEncode(
+        _itemsWithKnownCovers(
+          items,
+        ).take(1500).map((item) => item.toJson()).toList(growable: false),
+      );
+      await NativeBridge.setString('cacheRecentPlaylistId', playlistId);
+      await NativeBridge.setString('cacheRecentPlaylistSongs', payload);
     } catch (_) {}
   }
 
@@ -895,6 +1108,10 @@ class AppModel extends ChangeNotifier {
       'cachePlayerSnapshot',
       'cacheCurrentPlaylist',
       'cacheCurrentSongIndex',
+      'cacheCurrentPlaylistSource',
+      'cacheRecentPlaylistId',
+      'cacheRecentPlaylistSongs',
+      'playlistRevealCounts',
     ]) {
       try {
         await NativeBridge.removeString(key);
@@ -983,11 +1200,125 @@ class AppModel extends ChangeNotifier {
       }
     }
     songCoverCache = next;
+    final prefetchCount = items.length <= 40 ? items.length : 24;
+    final prefetchUrls = items
+        .map((item) => item.imageUrl)
+        .where((url) => url.startsWith('http'))
+        .take(prefetchCount)
+        .toList(growable: false);
+    if (prefetchUrls.isNotEmpty) {
+      // Give on-screen artwork the first download slots on a cold start.
+      unawaited(
+        Future<void>.delayed(const Duration(milliseconds: 320), () async {
+          await CoverRuntimeCache.instance.prefetch(prefetchUrls);
+          _scheduleSongCoverNotify();
+        }),
+      );
+    }
   }
 
   String coverFor(MirrorItem item) {
-    if (item.imageUrl.startsWith('http')) return item.imageUrl;
-    return songCoverCache[item.id] ?? '';
+    final cached = songCoverCache[item.id] ?? '';
+    if (cached.startsWith('http')) return cached;
+    return item.imageUrl.startsWith('http') ? item.imageUrl : '';
+  }
+
+  bool isSongArtworkReady(MirrorItem song) => _artworkPipeline.isReady(song);
+
+  Future<bool> prepareSongArtwork(
+    MirrorItem song, {
+    bool forceMetadata = false,
+  }) {
+    return _artworkPipeline.prepare(song, forceMetadata: forceMetadata);
+  }
+
+  Future<bool> prepareSongArtworkBatch(
+    List<MirrorItem> songs, {
+    bool forceMissingMetadata = false,
+  }) {
+    return _artworkPipeline.prepareBatch(
+      songs,
+      forceMissingMetadata: forceMissingMetadata,
+    );
+  }
+
+  Future<String> ensureSongCover(MirrorItem song, {bool force = false}) {
+    final known = coverFor(song);
+    if (!force && known.startsWith('http')) return Future.value(known);
+    final songId = song.id.trim();
+    if (songId.isEmpty) return Future.value('');
+    final pending = _songCoverRequests[songId];
+    if (pending != null) return pending;
+    final request =
+        _withSongCoverSlot(
+              () => _resolvePlaybackCover(
+                song,
+                force ? '' : known,
+                ignoreKnown: force,
+              ),
+            )
+            .then((url) {
+              if (url.startsWith('http')) {
+                songCoverCache = {...songCoverCache, songId: url};
+                if (player.songId == songId && player.coverUrl != url) {
+                  player = _playerWith(coverUrl: url);
+                  unawaited(NativeBridge.updatePlayerMetadata(player));
+                  _requestDynamicThemeFromCoverForSource(
+                    _activePlaybackDynamicSource,
+                    url,
+                    songId: songId,
+                    force: true,
+                  );
+                }
+                _scheduleSongCoverNotify();
+              }
+              return url;
+            })
+            .whenComplete(() {
+              _songCoverRequests.remove(songId);
+            });
+    _songCoverRequests[songId] = request;
+    return request;
+  }
+
+  Future<T> _withSongCoverSlot<T>(Future<T> Function() action) async {
+    if (_activeSongCoverRequests >= 6) {
+      final waiter = Completer<void>();
+      _songCoverWaiters.add(waiter);
+      await waiter.future;
+    }
+    _activeSongCoverRequests += 1;
+    try {
+      return await action();
+    } finally {
+      if (_activeSongCoverRequests > 0) _activeSongCoverRequests -= 1;
+      if (_songCoverWaiters.isNotEmpty) {
+        final waiter = _songCoverWaiters.removeAt(0);
+        if (!waiter.isCompleted) waiter.complete();
+      }
+    }
+  }
+
+  void _scheduleSongCoverNotify() {
+    if (_coverCacheNotifyTimer?.isActive == true) return;
+    _coverCacheNotifyTimer = Timer(const Duration(milliseconds: 90), () {
+      _coverCacheNotifyTimer = null;
+      _scheduleCoverCachePersistence();
+      notifyListeners();
+    });
+  }
+
+  void _scheduleCoverCachePersistence() {
+    _coverCachePersistTimer?.cancel();
+    _coverCachePersistTimer = Timer(const Duration(milliseconds: 1200), () {
+      _coverCachePersistTimer = null;
+      if (dailySongs.isNotEmpty) {
+        unawaited(_saveItemsCache('cacheDailySongs', dailySongs));
+      }
+      if (currentPlaylist.isNotEmpty || playerQueue.isNotEmpty) {
+        _scheduleCurrentPlaylistCacheSave(includeUpdatedCovers: true);
+      }
+    });
   }
 
   bool _isSameSongCollection(List<MirrorItem> left, List<MirrorItem> right) {
@@ -995,25 +1326,23 @@ class AppModel extends ChangeNotifier {
     if (left.isEmpty || right.isEmpty || left.length != right.length) {
       return false;
     }
-    bool sameAt(int index) =>
-        index >= 0 &&
-        index < left.length &&
-        index < right.length &&
-        _sameSong(left[index], right[index]);
-    final middle = left.length ~/ 2;
-    return sameAt(0) && sameAt(middle) && sameAt(left.length - 1);
+    for (var index = 0; index < left.length; index++) {
+      if (!_sameSong(left[index], right[index])) return false;
+    }
+    return true;
   }
 
   String _dynamicColorSourceForPlayback(
     List<MirrorItem> requestPlaylist,
     List<MirrorItem>? fromList,
+    String sourceHint,
   ) {
+    if (sourceHint == 'playlist' || sourceHint == 'daily') return sourceHint;
     final source = fromList != null && fromList.isNotEmpty
         ? fromList
         : requestPlaylist;
     if (_isSameSongCollection(source, dailySongs)) return 'daily';
     if (_isSameSongCollection(source, playlistSongs)) return 'playlist';
-    if (selectedLibraryPlaylist != null) return 'playlist';
     if (_dynamicColorSource == 'playlist' &&
         _isSameSongCollection(source, currentPlaylist)) {
       return 'playlist';
@@ -1057,8 +1386,11 @@ class AppModel extends ChangeNotifier {
     required String title,
     required String artist,
   }) {
+    if (_activePlaybackDynamicSongId.isNotEmpty &&
+        songId == _activePlaybackDynamicSongId) {
+      return _activePlaybackDynamicSource;
+    }
     final matchesPlaylist =
-        selectedLibraryPlaylist != null ||
         _songStateInList(
           playlistSongs,
           songId: songId,
@@ -1123,6 +1455,7 @@ class AppModel extends ChangeNotifier {
     _dynamicColorSerial += 1;
     _dynamicColorDebounce?.cancel();
     _dynamicColorPendingCoverUrl = '';
+    _dynamicColorPendingRequestKey = '';
     _dynamicColorQueuedCoverUrl = '';
     _dynamicColorQueuedSongId = '';
     _lastDynamicColorRequestKey = '';
@@ -1137,11 +1470,15 @@ class AppModel extends ChangeNotifier {
     bool force = false,
   }) {
     _setDynamicColorSource(source);
+    // Playlist playback owns its colour lifecycle in PlaylistModule. Letting
+    // generic cover updates compete here caused every player poll to launch a
+    // second colour calculation for the same song.
+    if (source == 'playlist') return;
     _requestDynamicThemeFromCover(coverUrl, songId: songId, force: force);
   }
 
   String _dynamicColorCacheKey(String coverUrl) =>
-      '$_dynamicColorSource|${_absoluteMusicUrl(coverUrl).trim()}';
+      _absoluteMusicUrl(coverUrl).trim();
 
   String _dynamicColorRequestKey(String songId, String coverUrl) =>
       '$_dynamicColorSource|$songId|$coverUrl';
@@ -1151,6 +1488,7 @@ class AppModel extends ChangeNotifier {
     _dynamicColorCoverUrl = '';
     _dynamicColorSongId = '';
     _dynamicColorPendingCoverUrl = '';
+    _dynamicColorPendingRequestKey = '';
     _dynamicColorQueuedCoverUrl = '';
     _dynamicColorQueuedSongId = '';
     _lastDynamicColorRequestKey = '';
@@ -1158,6 +1496,13 @@ class AppModel extends ChangeNotifier {
     _dynamicColorFailedAt = null;
     _dynamicColorSerial += 1;
     _dynamicColorSourceSerial += 1;
+  }
+
+  void _clearNativeDynamicColorAuthority() {
+    _nativeDynamicColorSongId = '';
+    _nativeDynamicColorArgb = null;
+    _playlistDynamicColorSongId = '';
+    _playlistDynamicColorArgb = null;
   }
 
   void _refreshDynamicThemeFromCurrentCover({bool force = false}) {
@@ -1191,31 +1536,6 @@ class AppModel extends ChangeNotifier {
     ].firstWhere((url) => url.startsWith('http'), orElse: () => '');
   }
 
-  void _scheduleManualDynamicThemeRefresh({
-    required int requestId,
-    required String coverUrl,
-    required String songId,
-    required String source,
-  }) {
-    final normalized = _absoluteMusicUrl(coverUrl).trim();
-    if (!dynamicColorEnabled || !normalized.startsWith('http')) return;
-
-    Future<void> refresh() async {
-      if (requestId != _playRequestId || !dynamicColorEnabled) return;
-      _requestDynamicThemeFromCoverForSource(
-        source,
-        normalized,
-        songId: songId,
-        force: true,
-      );
-    }
-
-    unawaited(refresh());
-    for (final delay in const [Duration(milliseconds: 450)]) {
-      unawaited(Future<void>.delayed(delay, refresh));
-    }
-  }
-
   Future<bool> _refreshDynamicThemeFromNativePlayback({
     bool force = false,
     String sourceHint = '',
@@ -1238,20 +1558,48 @@ class AppModel extends ChangeNotifier {
       final effectiveArtist = _stringOf(state['artist']).isNotEmpty
           ? _stringOf(state['artist'])
           : (player.artist.isNotEmpty ? player.artist : displayPlayer.artist);
+      if (effectiveSongId.isNotEmpty &&
+          _dynamicColorTargetSongId.isNotEmpty &&
+          effectiveSongId != _dynamicColorTargetSongId) {
+        return false;
+      }
       final nativeDynamicSource = _dynamicColorSourceForSongState(
         songId: effectiveSongId,
         title: effectiveTitle,
         artist: effectiveArtist,
       );
-      _setDynamicColorSource(
-        sourceHint == 'playlist' ? 'playlist' : nativeDynamicSource,
-      );
+      final effectiveDynamicSource = sourceHint == 'playlist'
+          ? 'playlist'
+          : nativeDynamicSource;
+      _setDynamicColorSource(effectiveDynamicSource);
+      final nativeCoverSongId = _stringOf(state['coverSongId']);
+      final nativeCoverBelongsToSong =
+          nativeCoverUrl.startsWith('http') &&
+          (effectiveSongId.isEmpty || nativeCoverSongId == effectiveSongId);
       final effectiveCoverUrl = _knownCoverForSongState(
         songId: effectiveSongId,
         title: effectiveTitle,
         artist: effectiveArtist,
-        fallback: nativeCoverUrl,
+        fallback: nativeCoverBelongsToSong ? nativeCoverUrl : '',
       );
+      final nativeCoverColor = _nativeOpaqueColor(state['coverColor']);
+      final nativeCoverColorSongId = _stringOf(state['coverColorSongId']);
+      final nativeColorMatches =
+          nativeCoverColor != null &&
+          (effectiveSongId.isEmpty
+              ? nativeCoverColorSongId.isEmpty
+              : nativeCoverColorSongId == effectiveSongId);
+      if (nativeColorMatches) {
+        await _applyDynamicThemeColor(
+          nativeCoverColor,
+          coverUrl: effectiveCoverUrl,
+          songId: effectiveSongId,
+          force: force,
+          syncDesktopLyrics: false,
+          authoritative: true,
+        );
+        return true;
+      }
       if (!effectiveCoverUrl.startsWith('http')) return false;
       if (effectiveSongId.isNotEmpty) {
         songCoverCache = {
@@ -1266,6 +1614,25 @@ class AppModel extends ChangeNotifier {
           songId: effectiveSongId.isNotEmpty ? effectiveSongId : null,
           coverUrl: effectiveCoverUrl,
         );
+      }
+      if (effectiveDynamicSource == 'playlist') {
+        final playlistSong = currentPlaylist.firstWhere(
+          (song) => _songStateMatches(
+            song,
+            songId: effectiveSongId,
+            title: effectiveTitle,
+            artist: effectiveArtist,
+          ),
+          orElse: () => player.asMirrorItem(),
+        );
+        await _playlistModule.refreshPlaybackColor(
+          requestId: _playRequestId,
+          song: playlistSong,
+          songId: effectiveSongId,
+          force: force,
+        );
+        if (coverChanged) notifyListeners();
+        return true;
       }
       if (force) {
         await _updateDynamicThemeFromCover(
@@ -1295,8 +1662,25 @@ class AppModel extends ChangeNotifier {
     String songId = '',
     bool force = false,
     bool syncDesktopLyrics = true,
+    bool authoritative = false,
   }) async {
     if (!dynamicColorEnabled) return;
+    if (songId.isNotEmpty &&
+        _dynamicColorTargetSongId.isNotEmpty &&
+        songId != _dynamicColorTargetSongId) {
+      return;
+    }
+    if (!authoritative &&
+        songId.isNotEmpty &&
+        _nativeDynamicColorSongId == songId &&
+        _nativeDynamicColorArgb != null) {
+      return;
+    }
+    if (authoritative && songId.isNotEmpty) {
+      _nativeDynamicColorSongId = songId;
+      _nativeDynamicColorArgb = color.toARGB32();
+      _dynamicThemeGuardTimer?.cancel();
+    }
     final normalized = _absoluteMusicUrl(coverUrl).trim();
     if (normalized.startsWith('http')) {
       _dynamicColorCoverUrl = normalized;
@@ -1312,22 +1696,25 @@ class AppModel extends ChangeNotifier {
     _dynamicColorFailedCoverUrl = '';
     _dynamicColorFailedAt = null;
     if (themeSeedColor.toARGB32() == color.toARGB32()) {
-      if (force) {
-        if (syncDesktopLyrics && desktopLyricsEnabled) {
-          unawaited(_applyDesktopLyricsStyle(force: true));
-        }
-        _scheduleDynamicThemeGuard(color);
-        notifyListeners();
+      if (syncDesktopLyrics && desktopLyricsEnabled) {
+        unawaited(_applyDesktopLyricsStyle());
       }
       return;
     }
     themeSeedColor = color;
-    await NativeBridge.setString('themeSeedColor', color.toARGB32().toString());
+    // Theme rendering must never wait for a busy platform channel. Persist the
+    // value in the background after the Flutter tree has received the update.
+    notifyListeners();
+    unawaited(
+      NativeBridge.setString(
+        'themeSeedColor',
+        color.toARGB32().toString(),
+      ).timeout(const Duration(seconds: 2)).catchError((_) {}),
+    );
     if (syncDesktopLyrics && desktopLyricsEnabled) {
       unawaited(_applyDesktopLyricsStyle(force: true));
     }
-    _scheduleDynamicThemeGuard();
-    notifyListeners();
+    if (!authoritative) _scheduleDynamicThemeGuard();
   }
 
   void _scheduleDynamicThemeGuard([Color? expectedColor]) {
@@ -1350,9 +1737,11 @@ class AppModel extends ChangeNotifier {
       _lastPlayerWithSong.coverUrl,
       songCoverCache[_lastPlayerWithSong.songId] ?? '',
     ].firstWhere((url) => url.startsWith('http'), orElse: () => '');
+    if (songId.isNotEmpty && _nativeDynamicColorSongId == songId) return;
     final expectedArgb = expectedColor?.toARGB32();
     _dynamicThemeGuardTimer = Timer(const Duration(milliseconds: 1200), () {
       if (!dynamicColorEnabled || requestId != _playRequestId) return;
+      if (songId.isNotEmpty && _nativeDynamicColorSongId == songId) return;
       if (expectedArgb != null && themeSeedColor.toARGB32() != expectedArgb) {
         return;
       }
@@ -1375,6 +1764,12 @@ class AppModel extends ChangeNotifier {
             })
             .whenComplete(() {
               _dynamicThemeGuardRefreshInProgress = false;
+              if (dynamicColorEnabled &&
+                  requestId != _playRequestId &&
+                  (_dynamicColorTargetSongId.isEmpty ||
+                      _nativeDynamicColorSongId != _dynamicColorTargetSongId)) {
+                _scheduleDynamicThemeGuard();
+              }
             }),
       );
     });
@@ -1431,27 +1826,14 @@ class AppModel extends ChangeNotifier {
         !desktopLyricsFollowDynamicColor) {
       return;
     }
-    _desktopLyricsStyleHoldUntil = null;
-    await _applyDesktopLyricsStyle(force: true, ignoreHold: true);
-    await Future<void>.delayed(const Duration(milliseconds: 260));
-    if (token != _desktopLyricsColorReviewSerial ||
-        requestId != _playRequestId) {
+    if (player.songId.isNotEmpty &&
+        _nativeDynamicColorSongId == player.songId) {
       return;
     }
-    final style = await NativeBridge.currentDesktopLyricsStyle().timeout(
-      const Duration(milliseconds: 700),
-      onTimeout: () => const <String, dynamic>{},
-    );
-    if (style['active'] != true) return;
-    final desktopColor =
-        _nativeOpaqueColor(style['backgroundColor']) ??
-        _nativeOpaqueColor(style['renderedBackgroundColor']);
-    if (desktopColor == null) return;
-    await _applyDynamicThemeColor(
-      desktopColor,
-      songId: player.songId,
+    _desktopLyricsStyleHoldUntil = null;
+    await _refreshDynamicThemeFromNativePlayback(
       force: true,
-      syncDesktopLyrics: false,
+      sourceHint: _activePlaybackDynamicSource,
     );
   }
 
@@ -1463,6 +1845,7 @@ class AppModel extends ChangeNotifier {
     final normalized = _absoluteMusicUrl(coverUrl).trim();
     if (!dynamicColorEnabled || !normalized.startsWith('http')) return;
     final requestKey = _dynamicColorRequestKey(songId, normalized);
+    if (_dynamicColorPendingRequestKey == requestKey) return;
     if (!force && requestKey == _lastDynamicColorRequestKey) return;
     final cached = _dynamicColorCache[_dynamicColorCacheKey(normalized)];
     if (cached != null) {
@@ -1520,6 +1903,8 @@ class AppModel extends ChangeNotifier {
   }) async {
     final normalized = _absoluteMusicUrl(coverUrl).trim();
     if (!dynamicColorEnabled || !normalized.startsWith('http')) return;
+    final requestKey = _dynamicColorRequestKey(songId, normalized);
+    if (_dynamicColorPendingRequestKey == requestKey) return;
     if (!force &&
         _dynamicColorCoverUrl == normalized &&
         (songId.isEmpty || songId == _dynamicColorSongId)) {
@@ -1537,6 +1922,7 @@ class AppModel extends ChangeNotifier {
     final sourceSerial = _dynamicColorSourceSerial;
     final source = _dynamicColorSource;
     _dynamicColorPendingCoverUrl = normalized;
+    _dynamicColorPendingRequestKey = requestKey;
     try {
       final color = await _dominantCoverColor(normalized);
       if (serial != _dynamicColorSerial ||
@@ -1571,10 +1957,20 @@ class AppModel extends ChangeNotifier {
           _dynamicColorPendingCoverUrl == normalized) {
         _dynamicColorPendingCoverUrl = '';
       }
+      if (_dynamicColorPendingRequestKey == requestKey) {
+        _dynamicColorPendingRequestKey = '';
+      }
     }
   }
 
   Future<Color?> _dominantCoverColor(String coverUrl) async {
+    final cached = await CoverRuntimeCache.instance.load(
+      _coverImageCandidates(coverUrl),
+    );
+    if (cached != null) {
+      final cachedColor = await _dominantColorFromImageBytes(cached.bytes);
+      if (cachedColor != null) return cachedColor;
+    }
     final candidates = _coverColorCandidates(coverUrl);
     if (candidates.isEmpty) return null;
     final client = HttpClient()
@@ -1668,14 +2064,21 @@ class AppModel extends ChangeNotifier {
       targetWidth: 28,
       targetHeight: 28,
     );
-    final frame = await codec.getNextFrame();
-    final bytes = await frame.image.toByteData(
-      format: ui.ImageByteFormat.rawRgba,
-    );
-    frame.image.dispose();
-    if (bytes == null) return null;
-    return _averageCoverColor(bytes, strict: true) ??
-        _averageCoverColor(bytes, strict: false);
+    try {
+      final frame = await codec.getNextFrame();
+      try {
+        final bytes = await frame.image.toByteData(
+          format: ui.ImageByteFormat.rawRgba,
+        );
+        if (bytes == null) return null;
+        return _averageCoverColor(bytes, strict: true) ??
+            _averageCoverColor(bytes, strict: false);
+      } finally {
+        frame.image.dispose();
+      }
+    } finally {
+      codec.dispose();
+    }
   }
 
   Color? _averageCoverColor(ByteData bytes, {required bool strict}) {
@@ -1712,12 +2115,16 @@ class AppModel extends ChangeNotifier {
         .toColor();
   }
 
-  Future<String> _resolvePlaybackCover(MirrorItem song, String fallback) async {
+  Future<String> _resolvePlaybackCover(
+    MirrorItem song,
+    String fallback, {
+    bool ignoreKnown = false,
+  }) async {
     final known = [
       fallback,
-      coverFor(song),
-      song.imageUrl,
-      songCoverCache[song.id] ?? '',
+      if (!ignoreKnown) coverFor(song),
+      if (!ignoreKnown) song.imageUrl,
+      if (!ignoreKnown) songCoverCache[song.id] ?? '',
     ].firstWhere((url) => url.startsWith('http'), orElse: () => '');
     if (known.isNotEmpty) return known;
     final songId = song.id.trim();
@@ -1730,25 +2137,32 @@ class AppModel extends ChangeNotifier {
         'https://music.163.com/',
       ).timeout(const Duration(seconds: 2), onTimeout: () => '');
       final typedId = int.tryParse(songId) ?? songId;
-      for (final uri in _songDetailApiUris([typedId])) {
-        try {
-          final decoded = await _getMusicJson(client, uri, cookie);
-          final songs = _listOf(
-            _mapOf(decoded)['songs'] ?? _mapOf(decoded)['data'],
-          );
-          for (final item in songs) {
-            final map = _mapOf(item);
-            final album = _mapOf(map['al'] ?? map['album']);
-            final cover = _absoluteMusicUrl(
-              _stringOf(album['picUrl'] ?? map['picUrl'] ?? map['coverUrl']),
+      for (var attempt = 0; attempt < 3; attempt++) {
+        for (final uri in _songDetailApiUris([typedId])) {
+          try {
+            final decoded = await _getMusicJson(client, uri, cookie);
+            final songs = _listOf(
+              _mapOf(decoded)['songs'] ?? _mapOf(decoded)['data'],
             );
-            if (cover.startsWith('http')) {
-              songCoverCache = {...songCoverCache, songId: cover};
-              return cover;
+            for (final item in songs) {
+              final map = _mapOf(item);
+              final album = _mapOf(map['al'] ?? map['album']);
+              final cover = _absoluteMusicUrl(
+                _stringOf(album['picUrl'] ?? map['picUrl'] ?? map['coverUrl']),
+              );
+              if (cover.startsWith('http')) {
+                songCoverCache = {...songCoverCache, songId: cover};
+                return cover;
+              }
             }
+          } catch (_) {
+            continue;
           }
-        } catch (_) {
-          continue;
+        }
+        if (attempt < 2) {
+          await Future<void>.delayed(
+            Duration(milliseconds: 180 * (attempt + 1)),
+          );
         }
       }
       final pageCover = await _resolveCoverFromSongPage(client, songId, cookie);
@@ -1770,7 +2184,9 @@ class AppModel extends ChangeNotifier {
   ) async {
     final uris = [
       Uri.https('music.163.com', '/song', {'id': songId}),
+      Uri.https('music.163.com', '/m/song', {'id': songId}),
       Uri.https('y.music.163.com', '/m/song', {'id': songId}),
+      Uri.https('y.music.163.com', '/song', {'id': songId}),
     ];
     final patterns = <RegExp>[
       RegExp(
@@ -1841,7 +2257,7 @@ class AppModel extends ChangeNotifier {
       await Future<void>.delayed(const Duration(milliseconds: 900));
     }
     loginLoading = true;
-    loginMessage = '正在生成官网登录二维码';
+    loginMessage = '正在生成二维码';
     loginQrData = '';
     loginQrImage = '';
     notifyListeners();
@@ -1871,7 +2287,7 @@ class AppModel extends ChangeNotifier {
       await Future<void>.delayed(const Duration(milliseconds: 800));
     }
     loginLoading = true;
-    loginMessage = '正在刷新官网登录二维码';
+    loginMessage = '正在刷新二维码';
     loginQrData = '';
     loginQrImage = '';
     notifyListeners();
@@ -2179,9 +2595,12 @@ class AppModel extends ChangeNotifier {
         'lastDailyAutoRefreshDate',
       ).timeout(const Duration(seconds: 2), onTimeout: () => null);
       if (lastRefreshDate == today) return false;
-      await NativeBridge.setString('lastDailyAutoRefreshDate', today);
       await loadDailySongs();
-      return true;
+      final refreshed = dailySongs.isNotEmpty && status.startsWith('已加载每日推荐');
+      if (refreshed) {
+        await NativeBridge.setString('lastDailyAutoRefreshDate', today);
+      }
+      return refreshed;
     } catch (_) {
       return false;
     }
@@ -2228,43 +2647,13 @@ class AppModel extends ChangeNotifier {
   }
 
   Future<void> loadPlaylistSongs(MirrorItem playlist) async {
-    playlistLoading = true;
-    _playlistAllowEmptySnapshot = false;
-    activePlaylistTitle = playlist.title;
-    playlistSongs = _playlistSongCache[playlist.id] ?? const [];
-    status = '正在打开歌单：${playlist.title}';
-    notifyListeners();
-    final directSongs = await _requestPlaylistSongsDirect(playlist.id);
-    if (selectedLibraryPlaylist?.id != playlist.id) return;
-    if (directSongs.isNotEmpty) {
-      playlistSongs = directSongs;
-      _playlistSongCache[playlist.id] = directSongs;
-      _rememberCovers(directSongs);
-      playlistLoading = false;
-      status = '已加载歌单 ${directSongs.length} 首歌';
-      notifyListeners();
-      return;
-    }
-    final playlistId = jsonEncode(playlist.id);
-    await _runJavaScript('window.__EMOC_ACTIVE_PLAYLIST_ID__ = $playlistId;');
-    await _openBehindWeb(playlist);
-    await Future<void>.delayed(const Duration(milliseconds: 1500));
-    await _runJavaScript('window.__EMOC_ACTIVE_PLAYLIST_ID__ = $playlistId;');
-    await _extractPage('playlist', targetId: playlist.id);
-    if (selectedLibraryPlaylist?.id != playlist.id) return;
-    if (playlistSongs.isEmpty) {
-      _playlistAllowEmptySnapshot = true;
-      playlistLoading = true;
-      notifyListeners();
-      await Future<void>.delayed(const Duration(milliseconds: 900));
-      await _extractPage('playlist', targetId: playlist.id);
-    }
-    _playlistAllowEmptySnapshot = false;
+    await _playlistModule.load(playlist);
   }
 
   Future<List<MirrorItem>> _requestPlaylistSongsDirect(
-    String playlistId,
-  ) async {
+    String playlistId, {
+    int? expectedCount,
+  }) async {
     final id = playlistId.trim();
     if (id.isEmpty) return const [];
     final client = HttpClient()
@@ -2274,22 +2663,25 @@ class AppModel extends ChangeNotifier {
       final cookie = await NativeBridge.getCookies(
         'https://music.163.com/',
       ).timeout(const Duration(seconds: 2), onTimeout: () => '');
+      var best = const <MirrorItem>[];
       for (final uri in _playlistApiUris(id)) {
         try {
           final decoded = await _getMusicJson(client, uri, cookie);
-          final items = await _playlistSongsFromApiResponse(
-            decoded,
-            id,
-            client,
-            cookie,
+          final items = _dedupeItems(
+            await _playlistSongsFromApiResponse(decoded, id, client, cookie),
           );
-          if (items.isNotEmpty) return _dedupeItems(items);
+          if (items.length > best.length) best = items;
+          if (expectedCount != null &&
+              expectedCount > 0 &&
+              best.length >= expectedCount) {
+            break;
+          }
         } catch (_) {}
       }
+      return best;
     } finally {
       client.close(force: true);
     }
-    return const [];
   }
 
   List<Uri> _playlistApiUris(String playlistId) {
@@ -2489,10 +2881,11 @@ class AppModel extends ChangeNotifier {
     String cookie,
   ) async {
     final roots = _apiRoots(decoded);
+    var directItems = const <MirrorItem>[];
     for (final root in roots) {
       final list = root is List ? root : const [];
       final items = _apiSongListToItems(list, 'playlist_api');
-      if (items.isNotEmpty) return items;
+      if (items.length > directItems.length) directItems = items;
     }
     for (final root in roots) {
       final map = root is Map ? root : const {};
@@ -2502,12 +2895,67 @@ class AppModel extends ChangeNotifier {
       }
       for (final key in const ['songs', 'tracks', 'list', 'items', 'datas']) {
         final items = _apiSongListToItems(_listOf(map[key]), 'playlist_api');
-        if (items.isNotEmpty) return items;
+        if (items.length > directItems.length) directItems = items;
       }
     }
-    final ids = _trackIdsFromApiRoots(roots);
-    if (ids.isEmpty) return const [];
-    return _fetchSongDetailsDirect(ids, client, cookie);
+    final responseIds = _trackIdsFromApiRoots(roots);
+    final detailIds = responseIds.isNotEmpty
+        ? responseIds
+        : directItems
+              .map((item) => item.id)
+              .where((id) => id.isNotEmpty)
+              .toList(growable: false);
+    final missingCovers = directItems.any(
+      (item) => !item.imageUrl.startsWith('http'),
+    );
+    if (detailIds.isEmpty ||
+        (!missingCovers && responseIds.length <= directItems.length)) {
+      return directItems;
+    }
+    final detailedItems = await _fetchSongDetailsDirect(
+      detailIds,
+      client,
+      cookie,
+    );
+    if (detailedItems.isEmpty) return directItems;
+    return _mergePlaylistSongsInIdOrder(detailIds, directItems, detailedItems);
+  }
+
+  List<MirrorItem> _mergePlaylistSongsInIdOrder(
+    List<String> ids,
+    List<MirrorItem> directItems,
+    List<MirrorItem> detailedItems,
+  ) {
+    final byId = <String, MirrorItem>{};
+    for (final item in directItems) {
+      if (item.id.isNotEmpty) byId[item.id] = item;
+    }
+    for (final item in detailedItems) {
+      if (item.id.isEmpty) continue;
+      final existing = byId[item.id];
+      if (existing == null || item.imageUrl.startsWith('http')) {
+        byId[item.id] = item;
+      } else {
+        byId[item.id] = MirrorItem(
+          domId: item.domId,
+          kind: item.kind,
+          title: item.title,
+          subtitle: item.subtitle,
+          imageUrl: existing.imageUrl,
+          href: item.href,
+        );
+      }
+    }
+    final ordered = <MirrorItem>[];
+    final seen = <String>{};
+    for (final id in ids) {
+      final item = byId[id];
+      if (item != null && seen.add(id)) ordered.add(item);
+    }
+    for (final item in [...detailedItems, ...directItems]) {
+      if (item.id.isNotEmpty && seen.add(item.id)) ordered.add(item);
+    }
+    return ordered;
   }
 
   List<dynamic> _apiRoots(dynamic decoded) {
@@ -2547,7 +2995,16 @@ class AppModel extends ChangeNotifier {
     final artist = _apiArtists(song);
     final albumName = _stringOf(album['name']);
     final imageUrl = _absoluteMusicUrl(
-      _stringOf(album['picUrl'] ?? album['pic']),
+      _stringOf(
+        album['picUrl'] ??
+            album['blurPicUrl'] ??
+            album['pic'] ??
+            song['picUrl'] ??
+            song['coverUrl'] ??
+            song['imageUrl'] ??
+            song['albumPicUrl'] ??
+            song['pic'],
+      ),
     );
     return MirrorItem(
       domId: '${prefix}_${id}_$index',
@@ -2595,35 +3052,90 @@ class AppModel extends ChangeNotifier {
     HttpClient client,
     String cookie,
   ) async {
-    final items = <MirrorItem>[];
-    for (var start = 0; start < ids.length; start += 200) {
-      final chunk = ids.skip(start).take(200).toList(growable: false);
-      final numericIds = chunk
-          .map((id) => int.tryParse(id) ?? id)
-          .toList(growable: false);
-      for (final uri in _songDetailApiUris(numericIds)) {
-        try {
-          final decoded = await _getMusicJson(client, uri, cookie);
-          final nextItems = _apiSongListToItems(
-            _listOf(_mapOf(decoded)['songs'] ?? _mapOf(decoded)['data']),
-            'playlist_api',
-          );
-          if (nextItems.isNotEmpty) {
-            items.addAll(nextItems);
-            break;
-          }
-        } catch (_) {
-          continue;
-        }
+    // Keep query strings short enough for every CDN/proxy in the request path.
+    // Large playlists previously used chunks of 200, which caused the detail
+    // request to fail and left only the first 10 tracks from the playlist page.
+    const detailBatchSize = 50;
+    final chunks = <List<String>>[
+      for (var start = 0; start < ids.length; start += detailBatchSize)
+        ids.skip(start).take(detailBatchSize).toList(growable: false),
+    ];
+    final results = List<List<MirrorItem>>.generate(
+      chunks.length,
+      (_) => const <MirrorItem>[],
+    );
+    var nextChunk = 0;
+
+    Future<void> worker() async {
+      while (nextChunk < chunks.length) {
+        final chunkIndex = nextChunk++;
+        final chunk = chunks[chunkIndex];
+        results[chunkIndex] = await _fetchSongDetailChunk(
+          chunk,
+          client,
+          cookie,
+        );
       }
     }
-    return items;
+
+    final workerCount = chunks.length.clamp(0, 4).toInt();
+    await Future.wait(List.generate(workerCount, (_) => worker()));
+    for (var index = 0; index < chunks.length; index++) {
+      if (results[index].length >= chunks[index].length) continue;
+      final retry = await _fetchSongDetailChunk(chunks[index], client, cookie);
+      if (retry.length > results[index].length) results[index] = retry;
+    }
+    return results.expand((items) => items).toList(growable: false);
+  }
+
+  Future<List<MirrorItem>> _fetchSongDetailChunk(
+    List<String> chunk,
+    HttpClient client,
+    String cookie,
+  ) async {
+    if (chunk.isEmpty) return const [];
+    final numericIds = chunk
+        .map((id) => int.tryParse(id) ?? id)
+        .toList(growable: false);
+    for (final uri in _songDetailApiUris(numericIds)) {
+      try {
+        final decoded = await _getMusicJson(client, uri, cookie);
+        var nextItems = const <MirrorItem>[];
+        for (final root in _apiRoots(decoded)) {
+          final rootMap = _mapOf(root);
+          final candidate = root is List
+              ? root
+              : _listOf(
+                  rootMap['songs'] ??
+                      rootMap['tracks'] ??
+                      rootMap['data'] ??
+                      rootMap['items'],
+                );
+          final parsed = _apiSongListToItems(candidate, 'playlist_api');
+          if (parsed.length > nextItems.length) nextItems = parsed;
+        }
+        if (nextItems.isNotEmpty) {
+          final byId = <String, MirrorItem>{
+            for (final item in nextItems)
+              if (item.id.isNotEmpty) item.id: item,
+          };
+          return chunk
+              .map((id) => byId[id])
+              .whereType<MirrorItem>()
+              .toList(growable: false);
+        }
+      } catch (_) {
+        continue;
+      }
+    }
+    return const [];
   }
 
   Future<void> clickSong(
     MirrorItem song, {
     List<MirrorItem>? fromList,
     int sourceIndex = -1,
+    String dynamicColorSource = '',
     bool autoAdvance = false,
     int skipDirection = 1,
     bool resetSkipGuard = false,
@@ -2640,7 +3152,16 @@ class AppModel extends ChangeNotifier {
     final playbackDynamicSource = _dynamicColorSourceForPlayback(
       requestPlaylist,
       fromList,
+      dynamicColorSource,
     );
+    _dynamicColorTargetSongId = song.id;
+    _playlistDynamicColorSongId = '';
+    _playlistDynamicColorArgb = null;
+    _playlistDynamicColorCoverUrl = '';
+    if (_nativeDynamicColorSongId != song.id) {
+      _nativeDynamicColorSongId = '';
+      _nativeDynamicColorArgb = null;
+    }
     _setDynamicColorSource(playbackDynamicSource);
     _pendingDynamicColorSource = playbackDynamicSource;
     _holdDesktopLyricsDynamicStyle();
@@ -2663,12 +3184,30 @@ class AppModel extends ChangeNotifier {
     noticeMessage = '';
     status = '正在请求播放地址：${song.title}';
     final knownCoverUrl = _knownCoverForDynamicColor(song);
-    if (knownCoverUrl.startsWith('http')) {
-      _scheduleManualDynamicThemeRefresh(
-        requestId: requestId,
-        coverUrl: knownCoverUrl,
+    unawaited(
+      prepareSongArtwork(
+        song,
+        forceMetadata:
+            playbackDynamicSource == 'playlist' &&
+            !knownCoverUrl.startsWith('http'),
+      ),
+    );
+    if (playbackDynamicSource == 'playlist') {
+      unawaited(
+        _playlistModule.refreshPlaybackColor(
+          requestId: requestId,
+          song: song,
+          songId: song.id,
+        ),
+      );
+    }
+    if (playbackDynamicSource != 'playlist' &&
+        knownCoverUrl.startsWith('http')) {
+      _requestDynamicThemeFromCoverForSource(
+        playbackDynamicSource,
+        knownCoverUrl,
         songId: song.id,
-        source: playbackDynamicSource,
+        force: true,
       );
     }
     notifyListeners();
@@ -2878,38 +3417,21 @@ class AppModel extends ChangeNotifier {
     return index >= 0 ? currentPlaylist[index] : null;
   }
 
-  int _nextSongIndex() {
-    if (currentPlaylist.isEmpty || currentSongIndex < 0) return -1;
-    if (currentSongIndex >= currentPlaylist.length) return -1;
-    if (player.mode == 'one') return currentSongIndex;
-    if (player.mode == 'shuffle') {
-      if (currentPlaylist.length == 1) return 0;
-      var index =
-          DateTime.now().microsecondsSinceEpoch % currentPlaylist.length;
-      if (index == currentSongIndex) {
-        index = (index + 1) % currentPlaylist.length;
-      }
-      return index;
-    }
-    final index = currentSongIndex + 1;
-    return index < currentPlaylist.length ? index : 0;
+  int _nextSongIndex({bool naturalEnd = false}) {
+    return _playbackOrder.nextIndex(
+      songs: currentPlaylist,
+      currentIndex: currentSongIndex,
+      mode: player.mode,
+      naturalEnd: naturalEnd,
+    );
   }
 
   int _previousSongIndex() {
-    if (currentPlaylist.isEmpty || currentSongIndex < 0) return -1;
-    if (currentSongIndex >= currentPlaylist.length) return -1;
-    if (player.mode == 'one') return currentSongIndex;
-    if (player.mode == 'shuffle') {
-      if (currentPlaylist.length == 1) return 0;
-      var index =
-          DateTime.now().microsecondsSinceEpoch % currentPlaylist.length;
-      if (index == currentSongIndex) {
-        index = (index + 1) % currentPlaylist.length;
-      }
-      return index;
-    }
-    final index = currentSongIndex - 1;
-    return index >= 0 ? index : currentPlaylist.length - 1;
+    return _playbackOrder.previousIndex(
+      songs: currentPlaylist,
+      currentIndex: currentSongIndex,
+      mode: player.mode,
+    );
   }
 
   Future<void> playNext({bool autoAdvance = false}) async {
@@ -2950,6 +3472,49 @@ class AppModel extends ChangeNotifier {
     String action,
     Map<String, dynamic> arguments,
   ) async {
+    if (action == 'coverColorChanged') {
+      if (!dynamicColorEnabled) return;
+      final songId = _stringOf(arguments['songId']);
+      if (songId.isNotEmpty &&
+          player.songId.isNotEmpty &&
+          songId != player.songId) {
+        return;
+      }
+      final color = _nativeOpaqueColor(arguments['color']);
+      if (color == null) return;
+      final coverUrl = _absoluteMusicUrl(_stringOf(arguments['coverUrl']));
+      final source = _activePlaybackDynamicSongId == songId
+          ? _activePlaybackDynamicSource
+          : _dynamicColorSourceForSongState(
+              songId: songId,
+              title: player.title,
+              artist: player.displayArtist,
+            );
+      _setDynamicColorSource(source);
+      final playlistColorAlreadyResolved =
+          source == 'playlist' &&
+          songId.isNotEmpty &&
+          _playlistDynamicColorSongId == songId &&
+          _playlistDynamicColorArgb != null;
+      if (songId.isNotEmpty && coverUrl.startsWith('http')) {
+        songCoverCache = {...songCoverCache, songId: coverUrl};
+      }
+      if (coverUrl.startsWith('http') && player.coverUrl != coverUrl) {
+        player = _playerWith(coverUrl: coverUrl);
+      }
+      if (!playlistColorAlreadyResolved) {
+        await _applyDynamicThemeColor(
+          color,
+          coverUrl: coverUrl,
+          songId: songId,
+          force: true,
+          syncDesktopLyrics: false,
+          authoritative: true,
+        );
+      }
+      _scheduleSongCoverNotify();
+      return;
+    }
     if (action == '__systemThemeChanged') {
       final next = arguments['dark'] == true;
       if (systemDarkMode != next) {
@@ -2996,6 +3561,15 @@ class AppModel extends ChangeNotifier {
     }
     if (action == 'play') {
       _localPauseRequested = false;
+      if (!_nativePlaybackActive && player.hasSong) {
+        await clickSong(
+          player.asMirrorItem(),
+          fromList: currentPlaylist,
+          sourceIndex: currentSongIndex,
+          dynamicColorSource: _activePlaybackDynamicSource,
+        );
+        return;
+      }
       player = _playerWith(playing: true);
       notifyListeners();
       await refreshPlayerState();
@@ -3087,18 +3661,22 @@ class AppModel extends ChangeNotifier {
       final effectiveArtist = nativeArtist.isNotEmpty
           ? nativeArtist
           : player.artist;
-      _setDynamicColorSource(
-        _dynamicColorSourceForSongState(
-          songId: effectiveSongId,
-          title: effectiveTitle,
-          artist: effectiveArtist,
-        ),
+      final previousPlayer = player;
+      final effectiveDynamicSource = _dynamicColorSourceForSongState(
+        songId: effectiveSongId,
+        title: effectiveTitle,
+        artist: effectiveArtist,
       );
+      _setDynamicColorSource(effectiveDynamicSource);
+      final nativeCoverSongId = _stringOf(state['coverSongId']);
+      final nativeCoverBelongsToSong =
+          nativeCoverUrl.startsWith('http') &&
+          (effectiveSongId.isEmpty || nativeCoverSongId == effectiveSongId);
       final effectiveCoverUrl = _knownCoverForSongState(
         songId: effectiveSongId,
         title: effectiveTitle,
         artist: effectiveArtist,
-        fallback: nativeCoverUrl,
+        fallback: nativeCoverBelongsToSong ? nativeCoverUrl : '',
       );
       final nativeCoverChanged =
           effectiveCoverUrl.startsWith('http') &&
@@ -3128,7 +3706,9 @@ class AppModel extends ChangeNotifier {
         playing: effectivePlaying,
         coverUrl: effectiveCoverUrl.startsWith('http')
             ? effectiveCoverUrl
-            : player.coverUrl,
+            : (effectiveSongId != previousPlayer.songId
+                  ? ''
+                  : previousPlayer.coverUrl),
         currentSeconds: (currentMs / 1000).floor(),
         durationSeconds: durationMs > 0
             ? (durationMs / 1000).ceil()
@@ -3150,16 +3730,90 @@ class AppModel extends ChangeNotifier {
               effectiveSongId != _dynamicColorSongId) ||
           (effectiveCoverUrl.startsWith('http') &&
               effectiveCoverUrl != _dynamicColorCoverUrl);
-      _requestDynamicThemeFromCover(
-        effectiveCoverUrl,
-        songId: effectiveSongId,
-        force: shouldForceDynamic,
-      );
-      notifyListeners();
+      final nativeCoverColor = _nativeOpaqueColor(state['coverColor']);
+      final nativeCoverColorSongId = _stringOf(state['coverColorSongId']);
+      final nativeColorMatches =
+          dynamicColorEnabled &&
+          nativeCoverColor != null &&
+          (effectiveSongId.isEmpty
+              ? nativeCoverColorSongId.isEmpty
+              : nativeCoverColorSongId == effectiveSongId);
+      final hasCurrentColorAuthority =
+          effectiveSongId.isNotEmpty &&
+          _nativeDynamicColorSongId == effectiveSongId &&
+          _nativeDynamicColorArgb != null;
+      final shouldApplyNativeColor =
+          nativeColorMatches &&
+          !hasCurrentColorAuthority &&
+          (themeSeedColor.toARGB32() != nativeCoverColor.toARGB32() ||
+              effectiveSongId != _dynamicColorSongId);
+      if (shouldApplyNativeColor) {
+        unawaited(
+          _applyDynamicThemeColor(
+            nativeCoverColor,
+            coverUrl: effectiveCoverUrl,
+            songId: effectiveSongId,
+            force: true,
+            syncDesktopLyrics: false,
+          ),
+        );
+      } else if (!nativeColorMatches && !hasCurrentColorAuthority) {
+        if (effectiveDynamicSource == 'playlist') {
+          final playlistSong = currentPlaylist.firstWhere(
+            (song) => _songStateMatches(
+              song,
+              songId: effectiveSongId,
+              title: effectiveTitle,
+              artist: effectiveArtist,
+            ),
+            orElse: () => player.asMirrorItem(),
+          );
+          unawaited(
+            _playlistModule.refreshPlaybackColor(
+              requestId: _playRequestId,
+              song: playlistSong,
+              songId: effectiveSongId,
+              force: shouldForceDynamic,
+            ),
+          );
+        } else {
+          _requestDynamicThemeFromCover(
+            effectiveCoverUrl,
+            songId: effectiveSongId,
+            force: shouldForceDynamic,
+          );
+        }
+      }
+      if (_playerPresentationChanged(previousPlayer, player)) {
+        notifyListeners();
+      } else {
+        _notifyPlaybackProgress();
+      }
       if (nativeEnded && !_localPauseRequested) {
         _handleNativeTrackEnded();
       }
     } catch (_) {}
+  }
+
+  bool _playerPresentationChanged(
+    PlayerSnapshot previous,
+    PlayerSnapshot next,
+  ) {
+    return previous.visible != next.visible ||
+        previous.songId != next.songId ||
+        previous.title != next.title ||
+        previous.artist != next.artist ||
+        previous.source != next.source ||
+        previous.coverUrl != next.coverUrl ||
+        previous.playing != next.playing ||
+        previous.durationMilliseconds != next.durationMilliseconds ||
+        previous.volume != next.volume ||
+        previous.mode != next.mode;
+  }
+
+  void _notifyPlaybackProgress() {
+    playbackRevision.value += 1;
+    _syncDesktopLyrics();
   }
 
   void _handleNativeTrackEnded() {
@@ -3171,7 +3825,7 @@ class AppModel extends ChangeNotifier {
   Future<void> _advanceAfterNativeEnd() async {
     try {
       await Future<void>.delayed(const Duration(milliseconds: 180));
-      final targetIndex = _nextSongIndex();
+      final targetIndex = _nextSongIndex(naturalEnd: true);
       final target = targetIndex >= 0 ? currentPlaylist[targetIndex] : null;
       if (target == null) {
         try {
@@ -3353,7 +4007,7 @@ class AppModel extends ChangeNotifier {
     if (currentPlaylist.isNotEmpty) {
       playerQueue = currentPlaylist;
       queueLoading = false;
-      unawaited(_saveCurrentPlaylistCache());
+      _scheduleCurrentPlaylistCacheSave();
       notifyListeners();
       return;
     }
@@ -3484,17 +4138,27 @@ class AppModel extends ChangeNotifier {
     final effectiveSongId = resolvedSongId.isNotEmpty
         ? resolvedSongId
         : pending.id;
+    _activePlaybackDynamicSource = _pendingDynamicColorSource;
+    _activePlaybackDynamicSongId = effectiveSongId;
+    _dynamicColorTargetSongId = effectiveSongId;
     if (_pendingPlaylist.isNotEmpty) {
       currentPlaylist = _pendingPlaylist;
     }
     currentSongIndex = _pendingSongIndex;
-    unawaited(_saveCurrentPlaylistCache());
+    _scheduleCurrentPlaylistCacheSave();
     playerBarVisible = true;
     player = _snapshotForSong(
       pending,
       songId: effectiveSongId,
       coverUrl: resolvedCoverUrl,
     );
+    if (!_songDetailMatchesPlayer(player)) {
+      songDetail = null;
+      songDetailLoading = false;
+      queueLyricLines = const [];
+      _lastDesktopLyricsDetailRequestKey = '';
+      _lastDesktopLyricsPayloadKey = '';
+    }
     if (effectiveSongId.isNotEmpty && player.coverUrl.startsWith('http')) {
       songCoverCache = {...songCoverCache, effectiveSongId: player.coverUrl};
     }
@@ -3506,15 +4170,50 @@ class AppModel extends ChangeNotifier {
     );
   }
 
+  void _schedulePlaylistDynamicThemeRecovery({
+    required int requestId,
+    required MirrorItem song,
+    required String songId,
+    required String source,
+  }) {
+    if (!dynamicColorEnabled || source != 'playlist') return;
+    unawaited(
+      Future<void>.delayed(const Duration(milliseconds: 1200), () {
+        final currentCover = _absoluteMusicUrl(
+          _knownCoverForDynamicColor(song),
+        ).trim();
+        if (requestId != _playRequestId ||
+            !dynamicColorEnabled ||
+            _activePlaybackDynamicSource != 'playlist' ||
+            _activePlaybackDynamicSongId != songId ||
+            (_playlistDynamicColorSongId == songId &&
+                _playlistDynamicColorArgb != null &&
+                currentCover == _playlistDynamicColorCoverUrl)) {
+          return;
+        }
+        unawaited(
+          _playlistModule.refreshPlaybackColor(
+            requestId: requestId,
+            song: song,
+            songId: songId,
+            force: true,
+          ),
+        );
+      }),
+    );
+  }
+
   void _restoreBeforePendingSong() {
     final previous = _pendingPreviousPlayer;
     _nativePlaybackActive = _pendingPreviousNativeActive;
     if (previous != null) {
       player = previous;
       playerBarVisible = true;
+      _dynamicColorTargetSongId = previous.songId;
     } else {
       player = PlayerSnapshot.empty;
       playerBarVisible = false;
+      _dynamicColorTargetSongId = '';
     }
   }
 
@@ -3736,23 +4435,6 @@ class AppModel extends ChangeNotifier {
     } catch (_) {}
   }
 
-  Future<void> _prepareSmsLoginSession({bool forceReload = false}) async {
-    final controller = await _ensureWebController();
-    if (controller == null) return;
-    await _useDesktopWebSession();
-    if (!pageUrl.startsWith('https://music.163.com') ||
-        pageUrl.contains('/m/login')) {
-      await controller.loadRequest(Uri.parse('https://music.163.com/'));
-      await Future<void>.delayed(const Duration(milliseconds: 900));
-    } else {
-      await Future<void>.delayed(
-        forceReload
-            ? const Duration(milliseconds: 450)
-            : const Duration(milliseconds: 150),
-      );
-    }
-  }
-
   void _configureWebView() {
     if (webController != null) return;
     final controller = WebViewController()
@@ -3767,6 +4449,7 @@ class AppModel extends ChangeNotifier {
         NavigationDelegate(
           onPageStarted: (url) {
             pageUrl = url;
+            unawaited(_installWebMediaBlockDuringNavigation());
             notifyListeners();
           },
           onPageFinished: (url) async {
@@ -3802,6 +4485,13 @@ class AppModel extends ChangeNotifier {
       unawaited(
         platformController.setMixedContentMode(MixedContentMode.alwaysAllow),
       );
+    }
+  }
+
+  Future<void> _installWebMediaBlockDuringNavigation() async {
+    for (final delay in <int>[40, 120, 280, 600]) {
+      await Future<void>.delayed(Duration(milliseconds: delay));
+      await _runJavaScript(_onPageReadyScript);
     }
   }
 
@@ -3992,7 +4682,7 @@ class AppModel extends ChangeNotifier {
         _handleSnapshot(decoded);
       }
     } catch (error) {
-      status = '解析官网投射失败：$error';
+      status = '解析内容失败：$error';
       notifyListeners();
     }
   }
@@ -4092,6 +4782,7 @@ class AppModel extends ChangeNotifier {
     dynamicColorEnabled = value;
     await NativeBridge.setString('dynamicColorEnabled', value.toString());
     _clearDynamicColorRequestState();
+    _clearNativeDynamicColorAuthority();
     if (!value) {
       themeSeedColor = const Color(0xFF3F7BFF);
       await NativeBridge.setString(
@@ -4105,7 +4796,29 @@ class AppModel extends ChangeNotifier {
     if (_nativePlaybackActive) {
       await _syncNativePlayerState();
     }
-    _refreshDynamicThemeFromCurrentCover(force: true);
+    final synced = await _refreshDynamicThemeFromNativePlayback(
+      force: true,
+      sourceHint: _activePlaybackDynamicSource,
+    );
+    if (!synced) _refreshDynamicThemeFromCurrentCover(force: true);
+  }
+
+  Future<void> setShowSongCovers(bool value) async {
+    if (showSongCovers == value) return;
+    showSongCovers = value;
+    notifyListeners();
+    unawaited(
+      NativeBridge.setString(
+        'showSongCovers',
+        value.toString(),
+      ).timeout(const Duration(seconds: 2)).catchError((_) {}),
+    );
+    if (!value) return;
+    unawaited(prepareSongArtworkBatch(dailySongs.take(12).toList()));
+    unawaited(prepareSongArtworkBatch(playlistSongs.take(18).toList()));
+    if (displayPlayer.hasSong) {
+      unawaited(prepareSongArtwork(displayPlayer.asMirrorItem()));
+    }
   }
 
   Future<void> setDesktopLyricsEnabled(bool value) async {
@@ -4301,15 +5014,9 @@ class AppModel extends ChangeNotifier {
       textColor.toARGB32(),
     ].join('|');
     if (!force && styleKey == _lastDesktopLyricsStyleKey) {
-      if (useDynamicColor) {
-        _scheduleDynamicThemeGuard(backgroundColor);
-      }
       return Future<void>.value();
     }
     _lastDesktopLyricsStyleKey = styleKey;
-    if (useDynamicColor) {
-      _scheduleDynamicThemeGuard(backgroundColor);
-    }
     return NativeBridge.setDesktopLyricsStyle(
       opacity: desktopLyricsOpacity,
       fontSize: desktopLyricsFontSize,
@@ -4428,8 +5135,68 @@ class AppModel extends ChangeNotifier {
 
   Future<void> _loadDesktopLyricsDetail(MirrorItem song) async {
     try {
+      final direct = await _requestSongDetailDirect(song);
+      final current = displayPlayer;
+      final stillCurrent = song.id.isNotEmpty && current.songId.isNotEmpty
+          ? song.id == current.songId
+          : _normalizeForMatch(song.title) == _normalizeForMatch(current.title);
+      if (direct != null && stillCurrent) {
+        songDetail = direct;
+        songDetailLoading = false;
+        queueLyricLines = direct.lyricLines;
+        _lastDesktopLyricsPayloadKey = '';
+        notifyListeners();
+        _syncDesktopLyrics(force: true);
+        return;
+      }
       await openSongDetail(song);
     } catch (_) {}
+  }
+
+  Future<SongDetail?> _requestSongDetailDirect(MirrorItem song) async {
+    final songId = song.id.trim();
+    if (songId.isEmpty) return null;
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 5)
+      ..idleTimeout = const Duration(seconds: 5);
+    try {
+      final cookie = await NativeBridge.getCookies(
+        'https://music.163.com/',
+      ).timeout(const Duration(seconds: 2), onTimeout: () => '');
+      final uris = [
+        Uri.https('music.163.com', '/api/song/lyric', {
+          'id': songId,
+          'lv': '-1',
+          'kv': '-1',
+          'tv': '-1',
+        }),
+        Uri.https('music.163.com', '/api/song/lyric/v1', {
+          'id': songId,
+          'lv': '-1',
+          'kv': '-1',
+          'tv': '-1',
+        }),
+      ];
+      for (final uri in uris) {
+        try {
+          final decoded = _mapOf(await _getMusicJson(client, uri, cookie));
+          final lyric = _stringOf(_mapOf(decoded['lrc'])['lyric']);
+          final translated = _stringOf(_mapOf(decoded['tlyric'])['lyric']);
+          if (lyric.isEmpty && translated.isEmpty) continue;
+          return SongDetail.fromJson({
+            'songId': songId,
+            'title': song.title,
+            'artist': song.subtitle,
+            'coverUrl': coverFor(song),
+            'lyric': lyric,
+            'translatedLyric': translated,
+          }, song);
+        } catch (_) {}
+      }
+    } finally {
+      client.close(force: true);
+    }
+    return null;
   }
 
   String _normalizeForMatch(String value) =>
@@ -4437,11 +5204,15 @@ class AppModel extends ChangeNotifier {
 
   Future<void> clearCache() async {
     _playlistSongCache.clear();
+    _playlistRevealCounts.clear();
+    _playlistRevealPersistTimer?.cancel();
     songCoverCache = <String, String>{};
+    CoverRuntimeCache.instance.clear();
     _lastSavedPlayerCacheKey = '';
     _lastSavedPlaylistCacheKey = '';
     _dynamicColorCache.clear();
     _clearDynamicColorRequestState();
+    _clearNativeDynamicColorAuthority();
     await _clearContentCache();
     status = '缓存已清除';
     _showNotice('缓存已清除');
@@ -4540,6 +5311,7 @@ class AppModel extends ChangeNotifier {
     try {
       await _deletePlaylistRemote(playlist.id);
       status = '已删除歌单：${playlist.title}';
+      _forgetPlaylistRevealCount(playlist.id);
       await NativeBridge.setString(
         'pinnedPlaylistIds',
         jsonEncode(pinnedPlaylistIds),
@@ -4649,6 +5421,7 @@ class AppModel extends ChangeNotifier {
         await _deleteSongFromPlaylistRemote(playlist.id, song.id);
       }
       status = '已删除：${song.title}';
+      unawaited(_saveRecentPlaylistSongsCache(playlist.id, nextSongs));
       notifyListeners();
       return true;
     } catch (error) {
@@ -5047,9 +5820,17 @@ class AppModel extends ChangeNotifier {
           .where((item) => item.kind == 'song')
           .toList(growable: false);
       if (freshPlaylistSongs.isNotEmpty) {
-        playlistSongs = freshPlaylistSongs;
+        // A late WebView snapshot can contain only the first visible page.
+        // Never let that shorter projection replace a complete API result.
+        if (playlistSongs.isEmpty ||
+            freshPlaylistSongs.length >= playlistSongs.length) {
+          playlistSongs = freshPlaylistSongs;
+        }
         if (selectedId.isNotEmpty) {
-          _playlistSongCache[selectedId] = freshPlaylistSongs;
+          final cached = _playlistSongCache[selectedId] ?? const <MirrorItem>[];
+          if (cached.isEmpty || playlistSongs.length >= cached.length) {
+            _playlistSongCache[selectedId] = playlistSongs;
+          }
         }
       } else if (playlistSongs.isEmpty && selectedId.isNotEmpty) {
         playlistSongs = _playlistSongCache[selectedId] ?? const [];
@@ -5194,9 +5975,9 @@ class AppModel extends ChangeNotifier {
       var resolvedSongId = songId;
       if (pendingSong != null) {
         resolvedSongId = pendingSong.id.isNotEmpty ? pendingSong.id : songId;
-        resolvedCoverUrl = await _resolvePlaybackCover(
+        resolvedCoverUrl = _knownCoverForDynamicColor(
           pendingSong,
-          _absoluteMusicUrl(_stringOf(data['coverUrl'])),
+          fallback: _absoluteMusicUrl(_stringOf(data['coverUrl'])),
         );
         if (resolvedCoverUrl.startsWith('http') && resolvedSongId.isNotEmpty) {
           songCoverCache = {
@@ -5204,24 +5985,15 @@ class AppModel extends ChangeNotifier {
             resolvedSongId: resolvedCoverUrl,
           };
         }
-        _requestDynamicThemeFromCoverForSource(
-          pendingDynamicColorSource,
-          resolvedCoverUrl,
-          songId: resolvedSongId,
-          force: resolvedCoverUrl.startsWith('http'),
-        );
-        _scheduleManualDynamicThemeRefresh(
-          requestId: requestId,
-          coverUrl: resolvedCoverUrl,
-          songId: resolvedSongId,
-          source: pendingDynamicColorSource,
-        );
       }
       _commitPendingSong(
         resolvedCoverUrl: resolvedCoverUrl,
         resolvedSongId: resolvedSongId,
       );
       _nativePlaybackActive = true;
+      if (resolvedCoverUrl.startsWith('http')) {
+        unawaited(CoverRuntimeCache.instance.prefetch([resolvedCoverUrl]));
+      }
       await NativeBridge.playUrl(url, player);
       if (requestId > 0 && requestId != _playRequestId) return;
       _localPauseRequested = false;
@@ -5237,6 +6009,24 @@ class AppModel extends ChangeNotifier {
       _scheduleInterfaceColorReviewFromDesktopLyrics(
         requestId > 0 ? requestId : _playRequestId,
       );
+      if (pendingSong != null) {
+        if (!resolvedCoverUrl.startsWith('http')) {
+          unawaited(
+            _resolveCurrentPlaybackCover(
+              requestId: requestId > 0 ? requestId : _playRequestId,
+              song: pendingSong,
+              songId: resolvedSongId,
+              source: pendingDynamicColorSource,
+            ),
+          );
+        }
+        _schedulePlaylistDynamicThemeRecovery(
+          requestId: requestId > 0 ? requestId : _playRequestId,
+          song: pendingSong,
+          songId: resolvedSongId,
+          source: pendingDynamicColorSource,
+        );
+      }
       await refreshPlayerState();
     } catch (error) {
       if (requestId > 0 && requestId != _playRequestId) return;
@@ -5247,6 +6037,48 @@ class AppModel extends ChangeNotifier {
       }
       _handleBlockedPendingSong(status, autoSkip: _pendingAutoAdvance);
     }
+  }
+
+  Future<void> _resolveCurrentPlaybackCover({
+    required int requestId,
+    required MirrorItem song,
+    required String songId,
+    required String source,
+  }) async {
+    final cover = await ensureSongCover(song, force: true);
+    if (!cover.startsWith('http') || requestId != _playRequestId) return;
+    final currentMatches = songId.isNotEmpty
+        ? player.songId == songId
+        : _normalizeForMatch(player.title) == _normalizeForMatch(song.title);
+    if (!currentMatches) return;
+    if (songId.isNotEmpty) {
+      songCoverCache = {...songCoverCache, songId: cover};
+    }
+    await CoverRuntimeCache.instance.prefetch([cover]);
+    if (requestId != _playRequestId) return;
+    final coverChanged = player.coverUrl != cover;
+    if (coverChanged) {
+      player = _playerWith(coverUrl: cover);
+      try {
+        await NativeBridge.updatePlayerMetadata(player);
+      } catch (_) {}
+    }
+    if (source == 'playlist') {
+      await _playlistModule.refreshPlaybackColor(
+        requestId: requestId,
+        song: song,
+        songId: songId,
+        force: true,
+      );
+    } else {
+      _requestDynamicThemeFromCoverForSource(
+        source,
+        cover,
+        songId: songId,
+        force: true,
+      );
+    }
+    _scheduleSongCoverNotify();
   }
 
   bool _nativePlaybackFailureLooksAccessDenied(String value) {
@@ -5288,11 +6120,15 @@ class AppModel extends ChangeNotifier {
       if (coverChanged) {
         player = _playerWith(coverUrl: detailCover);
       }
-      _requestDynamicThemeFromCover(
+      _requestDynamicThemeFromCoverForSource(
+        _activePlaybackDynamicSource,
         detailCover,
         songId: detailSongId,
         force: coverChanged,
       );
+    }
+    if (_songDetailMatchesPlayer(player) && detail.lyricLines.isNotEmpty) {
+      queueLyricLines = detail.lyricLines;
     }
     notifyListeners();
   }
@@ -5318,17 +6154,36 @@ class AppModel extends ChangeNotifier {
           .where((item) => item.title.isNotEmpty)
           .toList(growable: false),
     );
-    playerQueue = officialQueue.isEmpty ? currentPlaylist : officialQueue;
-    if (currentPlaylist.isEmpty && playerQueue.isNotEmpty) {
+    final localQueue = currentPlaylist;
+    final localCurrentIndex = _indexOfSongInList(
+      player.asMirrorItem(),
+      localQueue,
+      sourceIndex: currentSongIndex,
+    );
+    final officialCurrentIndex = _indexOfSongInList(
+      player.asMirrorItem(),
+      officialQueue,
+    );
+    final keepLocalQueue =
+        localQueue.isNotEmpty &&
+        (officialQueue.isEmpty ||
+            (localCurrentIndex >= 0 &&
+                localQueue.length >= officialQueue.length));
+    playerQueue = keepLocalQueue ? localQueue : officialQueue;
+    if (keepLocalQueue && localCurrentIndex >= 0) {
+      currentSongIndex = localCurrentIndex;
+    }
+    if (!keepLocalQueue && currentPlaylist.isEmpty && playerQueue.isNotEmpty) {
       currentPlaylist = playerQueue;
       currentSongIndex = _indexOfSongInList(
         player.asMirrorItem(),
         currentPlaylist,
+        sourceIndex: officialCurrentIndex,
       );
     }
     queueLyricLines = _lyricLines(_stringOf(data['lyric']));
     queueLoading = false;
-    unawaited(_saveCurrentPlaylistCache());
+    _scheduleCurrentPlaylistCacheSave();
     notifyListeners();
   }
 
@@ -5355,8 +6210,12 @@ class AppModel extends ChangeNotifier {
         _lastSavedPlayerCacheKey = cacheKey;
         unawaited(_savePlayerCache(player));
       }
-      if (!_nativePlaybackActive) {
-        _requestDynamicThemeFromCover(player.coverUrl, songId: player.songId);
+      if (!_nativePlaybackActive && !_nativePlaybackPending) {
+        _requestDynamicThemeFromCoverForSource(
+          _activePlaybackDynamicSource,
+          player.coverUrl,
+          songId: player.songId,
+        );
       }
     }
     if (desktopLyricsEnabled) {

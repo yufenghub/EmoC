@@ -1,9 +1,11 @@
 package com.codex.emoc
 
+import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
@@ -34,24 +36,48 @@ import java.lang.ref.WeakReference
 
 @UnstableApi
 class MainActivity : FlutterActivity() {
-    private var player: ExoPlayer? = null
-    private var nativeChannel: MethodChannel? = null
-    private var systemMediaController: SystemMediaController? = null
-    private var desktopLyricsOverlay: DesktopLyricsOverlayController? = null
-    private var currentTrack = TrackMetadata()
-    private var playerVolume = 0.7f
-    private var userPaused = false
-    private var pausedByAudioFocusLoss = false
-    private var allowMixedAudio = false
+    private var ownedNativeChannel: MethodChannel? = null
+    private var ownedSystemMediaController: SystemMediaController? = null
+    private var player: ExoPlayer?
+        get() = sharedPlayer
+        set(value) { sharedPlayer = value }
+    private var nativeChannel: MethodChannel?
+        get() = sharedNativeChannel
+        set(value) { sharedNativeChannel = value }
+    private var systemMediaController: SystemMediaController?
+        get() = sharedSystemMediaController
+        set(value) { sharedSystemMediaController = value }
+    private var desktopLyricsOverlay: DesktopLyricsOverlayController?
+        get() = sharedDesktopLyricsOverlay
+        set(value) { sharedDesktopLyricsOverlay = value }
+    private var currentTrack: TrackMetadata
+        get() = sharedCurrentTrack
+        set(value) { sharedCurrentTrack = value }
+    private var playerVolume: Float
+        get() = sharedPlayerVolume
+        set(value) { sharedPlayerVolume = value }
+    private var userPaused: Boolean
+        get() = sharedUserPaused
+        set(value) { sharedUserPaused = value }
+    private var pausedByAudioFocusLoss: Boolean
+        get() = sharedPausedByAudioFocusLoss
+        set(value) { sharedPausedByAudioFocusLoss = value }
+    private var allowMixedAudio: Boolean
+        get() = sharedAllowMixedAudio
+        set(value) { sharedAllowMixedAudio = value }
     private var noisyReceiverRegistered = false
     private var audioDeviceCallbackRegistered = false
-    private var audioFocusRequest: AudioFocusRequest? = null
+    private var audioFocusRequest: AudioFocusRequest?
+        get() = sharedAudioFocusRequest
+        set(value) { sharedAudioFocusRequest = value }
 
-    @Volatile
-    private var playerPrepared = false
+    private var playerPrepared: Boolean
+        get() = sharedPlayerPrepared
+        set(value) { sharedPlayerPrepared = value }
 
-    @Volatile
-    private var playGeneration = 0
+    private var playGeneration: Int
+        get() = sharedPlayGeneration
+        set(value) { sharedPlayGeneration = value }
 
     private val noisyReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -76,9 +102,14 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        activeActivity?.get()
+            ?.takeIf { it !== this }
+            ?.unregisterAudioRouteWatchers()
         activeActivity = WeakReference(this)
         allowMixedAudio = prefs().getString("allowMixedAudio", "false") == "true"
-        desktopLyricsOverlay = DesktopLyricsOverlayController(this)
+        if (desktopLyricsOverlay == null) {
+            desktopLyricsOverlay = DesktopLyricsOverlayController(applicationContext)
+        }
         registerAudioRouteWatchers()
     }
 
@@ -109,8 +140,12 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         activeActivity = WeakReference(this)
-        nativeChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "emoc/native")
-        systemMediaController = SystemMediaController(this, object : SystemMediaController.Callbacks {
+        val engineChannel =
+            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "emoc/native")
+        ownedNativeChannel = engineChannel
+        nativeChannel = engineChannel
+        systemMediaController?.release()
+        val mediaController = SystemMediaController(applicationContext, object : SystemMediaController.Callbacks {
             override fun onPlay() = handleSystemMediaAction(SystemMediaController.ACTION_PLAY)
             override fun onPause() = handleSystemMediaAction(SystemMediaController.ACTION_PAUSE)
             override fun onPrevious() = handleSystemMediaAction(SystemMediaController.ACTION_PREVIOUS)
@@ -120,8 +155,16 @@ class MainActivity : FlutterActivity() {
                 updateSystemMedia()
                 notifyFlutter("seek", mapOf("positionMs" to positionMs.coerceAtLeast(0L)))
             }
+            override fun onCoverColor(songId: String, coverUrl: String, color: Int) {
+                notifyFlutter(
+                    "coverColorChanged",
+                    mapOf("songId" to songId, "coverUrl" to coverUrl, "color" to color)
+                )
+            }
         })
-        nativeChannel?.setMethodCallHandler { call, result ->
+        ownedSystemMediaController = mediaController
+        systemMediaController = mediaController
+        engineChannel.setMethodCallHandler { call, result ->
                 when (call.method) {
                     "playUrl" -> {
                         val url = call.argument<String>("url").orEmpty()
@@ -150,6 +193,26 @@ class MainActivity : FlutterActivity() {
                         )
                         result.success(null)
                     }
+                    "updatePlayerMetadata" -> {
+                        currentTrack = TrackMetadata(
+                            songId = call.argument<String>("songId").orEmpty(),
+                            title = call.argument<String>("title").orEmpty().ifBlank { "EmoC" },
+                            artist = call.argument<String>("artist").orEmpty().ifBlank { "网易云音乐" },
+                            coverUrl = call.argument<String>("coverUrl").orEmpty()
+                        )
+                        val current = player
+                        if (current == null) {
+                            systemMediaController?.update(
+                                metadata = currentTrack,
+                                playing = false,
+                                currentMs = 0L,
+                                durationMs = call.argument<Number>("durationMs")?.toLong() ?: 0L
+                            )
+                        } else {
+                            updateSystemMedia()
+                        }
+                        result.success(null)
+                    }
                     "pause" -> {
                         userPaused = true
                         pausedByAudioFocusLoss = false
@@ -168,6 +231,7 @@ class MainActivity : FlutterActivity() {
                         pausedByAudioFocusLoss = false
                         player?.playWhenReady = true
                         player?.play()
+                        PlaybackKeepAliveService.start(this, currentTrack)
                         updateSystemMedia()
                         result.success(null)
                     }
@@ -328,6 +392,9 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
         }
+        if (player != null) {
+            updateSystemMedia()
+        }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -375,6 +442,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun playUrl(url: String, metadata: TrackMetadata, result: MethodChannel.Result) {
+        ensureNotificationPermission()
         val generation = playGeneration + 1
         playGeneration = generation
         val previousPlayer = player
@@ -418,9 +486,9 @@ class MainActivity : FlutterActivity() {
                 errorOnce("AUDIO_FOCUS_DENIED", "音频焦点被其他应用占用")
                 return
             }
-            val renderersFactory = DefaultRenderersFactory(this)
+            val renderersFactory = DefaultRenderersFactory(applicationContext)
                 .setEnableDecoderFallback(true)
-            val exoPlayer = ExoPlayer.Builder(this, renderersFactory).build()
+            val exoPlayer = ExoPlayer.Builder(applicationContext, renderersFactory).build()
             player = exoPlayer
             playerPrepared = false
 
@@ -573,6 +641,8 @@ class MainActivity : FlutterActivity() {
         )
         if (playing) {
             PlaybackKeepAliveService.start(this, currentTrack)
+        } else if (ended) {
+            PlaybackKeepAliveService.stop(this)
         }
     }
 
@@ -601,6 +671,11 @@ class MainActivity : FlutterActivity() {
             "title" to currentTrack.title,
             "artist" to currentTrack.artist,
             "coverUrl" to currentTrack.coverUrl,
+            "coverSongId" to if (currentTrack.coverUrl.startsWith("http")) {
+                currentTrack.songId
+            } else {
+                ""
+            },
             "ended" to ended
         )
         val colorUrl = systemMediaController?.currentCoverColorUrl().orEmpty()
@@ -635,6 +710,7 @@ class MainActivity : FlutterActivity() {
                     pausedByAudioFocusLoss = false
                     current.playWhenReady = true
                     current.play()
+                    PlaybackKeepAliveService.start(this, currentTrack)
                     notifyFlutter("play")
                 }
                 updateSystemMedia()
@@ -663,6 +739,19 @@ class MainActivity : FlutterActivity() {
 
     private fun audioManager(): AudioManager {
         return getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    }
+
+    private fun ensureNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        requestPermissions(
+            arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+            NOTIFICATION_PERMISSION_REQUEST_CODE
+        )
     }
 
     private fun requestAudioFocus(): Boolean {
@@ -802,9 +891,18 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
-        if (shouldKeepPlaybackAliveOnDestroy()) {
+        val isActiveActivity = activeActivity?.get() === this
+        if (isActiveActivity && shouldKeepPlaybackAliveOnDestroy()) {
             PlaybackKeepAliveService.start(this, currentTrack)
             updateSystemMedia()
+            super.onDestroy()
+            return
+        }
+        if (!isActiveActivity) {
+            unregisterAudioRouteWatchers()
+            ownedNativeChannel?.setMethodCallHandler(null)
+            ownedNativeChannel = null
+            ownedSystemMediaController = null
             super.onDestroy()
             return
         }
@@ -815,16 +913,41 @@ class MainActivity : FlutterActivity() {
         desktopLyricsOverlay = null
         systemMediaController?.release()
         systemMediaController = null
-        if (activeActivity?.get() == this) {
-            activeActivity = null
-        }
+        ownedNativeChannel?.setMethodCallHandler(null)
+        ownedNativeChannel = null
+        ownedSystemMediaController = null
+        activeActivity = null
+        nativeChannel = null
         super.onDestroy()
     }
 
     companion object {
+        private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 16303
         const val USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
                 "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+        // Playback state belongs to the process, not to one FlutterActivity.
+        // Android can recreate the task while the foreground playback service
+        // keeps the process alive; sharing this state lets the new Activity
+        // reconnect to the existing player instead of creating a second media
+        // session or losing controls for the track that is still playing.
+        private var sharedPlayer: ExoPlayer? = null
+        private var sharedNativeChannel: MethodChannel? = null
+        private var sharedSystemMediaController: SystemMediaController? = null
+        private var sharedDesktopLyricsOverlay: DesktopLyricsOverlayController? = null
+        private var sharedCurrentTrack = TrackMetadata()
+        private var sharedPlayerVolume = 0.7f
+        private var sharedUserPaused = false
+        private var sharedPausedByAudioFocusLoss = false
+        private var sharedAllowMixedAudio = false
+        private var sharedAudioFocusRequest: AudioFocusRequest? = null
+
+        @Volatile
+        private var sharedPlayerPrepared = false
+
+        @Volatile
+        private var sharedPlayGeneration = 0
 
         private var activeActivity: WeakReference<MainActivity>? = null
 

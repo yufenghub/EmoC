@@ -19,17 +19,22 @@ class PlaylistDetailPage extends StatefulWidget {
 class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   final ScrollController _controller = ScrollController();
   final TextEditingController _searchController = TextEditingController();
-  static const int _initialVisibleSongs = 60;
-  static const int _visibleSongStep = 60;
-  int _visibleSongCount = _initialVisibleSongs;
-  int _lastSongTotal = 0;
+  final SongViewportController _viewport = SongViewportController(
+    batchSize: 36,
+    eager: true,
+    automaticBatchCount: 2,
+  );
   String _searchQuery = '';
+  List<MirrorItem>? _filteredSource;
+  String _filteredSourceQuery = '';
+  List<MirrorItem> _filteredCache = const [];
 
   @override
   void initState() {
     super.initState();
     _controller.addListener(_loadMoreWhenNearBottom);
     _searchController.addListener(_handleSearchChanged);
+    _viewport.addListener(_rememberViewportProgress);
     unawaited(widget.model.loadPlaylistSongs(widget.playlist));
   }
 
@@ -37,6 +42,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   void dispose() {
     _controller.removeListener(_loadMoreWhenNearBottom);
     _searchController.removeListener(_handleSearchChanged);
+    _viewport.removeListener(_rememberViewportProgress);
+    _viewport.dispose();
     _searchController.dispose();
     _controller.dispose();
     super.dispose();
@@ -47,38 +54,36 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     if (next == _searchQuery) return;
     setState(() {
       _searchQuery = next;
-      _lastSongTotal = -1;
     });
+    _viewport.reset();
   }
 
   void _loadMoreWhenNearBottom() {
     if (!_controller.hasClients) return;
-    if (_controller.position.extentAfter > 520) return;
-    final total = _filteredSongs(widget.model.playlistSongs).length;
-    if (_visibleSongCount >= total) return;
-    setState(() {
-      _visibleSongCount = (_visibleSongCount + _visibleSongStep).clamp(
-        0,
-        total,
-      );
-    });
+    if (_controller.position.extentAfter > 700) return;
+    unawaited(_viewport.prepareNext(widget.model));
   }
 
-  void _syncVisibleCount(int total) {
-    if (total != _lastSongTotal) {
-      _lastSongTotal = total;
-      _visibleSongCount = total < _initialVisibleSongs
-          ? total
-          : _initialVisibleSongs;
-    } else if (_visibleSongCount > total) {
-      _visibleSongCount = total;
-    }
+  void _rememberViewportProgress() {
+    if (_searchQuery.isNotEmpty || !widget.model.showSongCovers) return;
+    widget.model.rememberPlaylistRevealCount(
+      widget.playlist.id,
+      _viewport.readyCount,
+    );
   }
 
   List<MirrorItem> _filteredSongs(List<MirrorItem> songs) {
     final query = _normalizeSearchText(_searchQuery);
-    if (query.isEmpty) return songs;
-    return songs
+    if (query.isEmpty) {
+      _filteredSource = songs;
+      _filteredSourceQuery = '';
+      _filteredCache = songs;
+      return songs;
+    }
+    if (identical(_filteredSource, songs) && _filteredSourceQuery == query) {
+      return _filteredCache;
+    }
+    final filtered = songs
         .where((song) {
           final haystack = _normalizeSearchText(
             '${song.title} ${song.subtitle}',
@@ -86,6 +91,10 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
           return haystack.contains(query);
         })
         .toList(growable: false);
+    _filteredSource = songs;
+    _filteredSourceQuery = query;
+    _filteredCache = filtered;
+    return filtered;
   }
 
   String _normalizeSearchText(String value) {
@@ -93,24 +102,28 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   }
 
   Future<void> _refreshPlaylistSongs() async {
-    setState(() {
-      _lastSongTotal = -1;
-      _visibleSongCount = _initialVisibleSongs;
-    });
+    _viewport.reset();
     await widget.model.loadPlaylistSongs(widget.playlist);
   }
 
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: widget.model,
+      animation: Listenable.merge([widget.model, _viewport]),
       builder: (context, _) {
         final songs = widget.model.playlistSongs;
         final filteredSongs = _filteredSongs(songs);
-        _syncVisibleCount(filteredSongs.length);
-        final visibleSongs = filteredSongs
-            .take(_visibleSongCount)
-            .toList(growable: false);
+        _viewport.synchronize(
+          widget.model,
+          filteredSongs,
+          initialReadyCount: _searchQuery.isEmpty
+              ? widget.model.playlistRevealCount(widget.playlist.id)
+              : 0,
+        );
+        final viewportMatches = _viewport.matches(widget.model, filteredSongs);
+        final visibleSongs = viewportMatches
+            ? _viewport.visibleSongs
+            : const <MirrorItem>[];
         final searching = _searchQuery.isNotEmpty;
         return SafeArea(
           child: RefreshIndicator(
@@ -123,6 +136,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
             child: CustomScrollView(
               physics: const AlwaysScrollableScrollPhysics(),
               controller: _controller,
+              scrollCacheExtent: const ScrollCacheExtent.pixels(700),
               slivers: [
                 SliverPadding(
                   padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
@@ -242,8 +256,11 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                   visibleSongs: visibleSongs,
                   playbackSongs: songs,
                   sourceSongs: filteredSongs,
-                  loading: widget.model.playlistLoading,
-                  hasMore: _visibleSongCount < filteredSongs.length,
+                  loading:
+                      widget.model.playlistLoading ||
+                      _viewport.preparing ||
+                      (!viewportMatches && filteredSongs.isNotEmpty),
+                  hasMore: viewportMatches && _viewport.hasMore,
                   emptyText: searching ? '未找到匹配歌曲' : '无歌曲',
                 ),
                 const SliverToBoxAdapter(child: SizedBox(height: 28)),
@@ -444,6 +461,7 @@ class _PlaylistSwipeSongTileState extends State<PlaylistSwipeSongTile> {
   static const double _deleteWidth = 82;
   double _dragOffset = 0;
   bool _removing = false;
+  bool _collapsing = false;
 
   bool get _canDelete =>
       widget.playlist.kind == 'playlist' || widget.playlist.kind == 'liked';
@@ -455,6 +473,7 @@ class _PlaylistSwipeSongTileState extends State<PlaylistSwipeSongTile> {
         oldWidget.song.title != widget.song.title) {
       _dragOffset = 0;
       _removing = false;
+      _collapsing = false;
     }
   }
 
@@ -483,7 +502,10 @@ class _PlaylistSwipeSongTileState extends State<PlaylistSwipeSongTile> {
       _removing = true;
       _dragOffset = -MediaQuery.sizeOf(context).width;
     });
-    await Future<void>.delayed(const Duration(milliseconds: 230));
+    await Future<void>.delayed(const Duration(milliseconds: 220));
+    if (!mounted) return;
+    setState(() => _collapsing = true);
+    await Future<void>.delayed(const Duration(milliseconds: 240));
     if (!mounted) return;
     final deleted = await widget.model.removeSongFromPlaylist(
       widget.playlist,
@@ -492,6 +514,7 @@ class _PlaylistSwipeSongTileState extends State<PlaylistSwipeSongTile> {
     if (!mounted || deleted) return;
     setState(() {
       _removing = false;
+      _collapsing = false;
       _dragOffset = 0;
     });
   }
@@ -507,12 +530,12 @@ class _PlaylistSwipeSongTileState extends State<PlaylistSwipeSongTile> {
       alignment: Alignment.topCenter,
       child: ClipRect(
         child: SizedBox(
-          height: _removing ? 0 : _songTileHeight + 8,
+          height: _collapsing ? 0 : _songTileHeight + 8,
           child: Padding(
             padding: const EdgeInsets.only(bottom: 8),
             child: AnimatedOpacity(
               duration: const Duration(milliseconds: 180),
-              opacity: _removing ? 0 : 1,
+              opacity: _collapsing ? 0 : 1,
               child: Stack(
                 children: [
                   Positioned.fill(
@@ -542,10 +565,11 @@ class _PlaylistSwipeSongTileState extends State<PlaylistSwipeSongTile> {
                     child: GestureDetector(
                       onHorizontalDragUpdate: _handleDragUpdate,
                       onHorizontalDragEnd: _handleDragEnd,
-                      child: SongTile(
+                      child: PreparedSongTile(
                         song: widget.song,
                         sourceList: widget.sourceList,
                         sourceIndex: widget.sourceIndex,
+                        dynamicColorSource: 'playlist',
                       ),
                     ),
                   ),

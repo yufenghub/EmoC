@@ -87,6 +87,17 @@ class NativeBridge {
       'title': player.title,
       'artist': player.displayArtist,
       'coverUrl': player.coverUrl,
+      'durationMs': player.durationMilliseconds,
+    });
+  }
+
+  static Future<void> updatePlayerMetadata(PlayerSnapshot player) {
+    return _nativeChannel.invokeMethod('updatePlayerMetadata', {
+      'songId': player.songId,
+      'title': player.title,
+      'artist': player.displayArtist,
+      'coverUrl': player.coverUrl,
+      'durationMs': player.durationMilliseconds,
     });
   }
 

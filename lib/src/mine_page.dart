@@ -57,6 +57,15 @@ class MinePage extends StatelessWidget {
                 unawaited(model.setDynamicColorEnabled(value)),
           ),
         ),
+        const SizedBox(height: 10),
+        SettingsTile(
+          icon: Icons.image_outlined,
+          title: '显示歌曲封面',
+          trailing: Switch(
+            value: model.showSongCovers,
+            onChanged: (value) => unawaited(model.setShowSongCovers(value)),
+          ),
+        ),
         const SettingsSectionTitle(title: '播放'),
         AudioQualitySettingsTile(model: model),
         const SizedBox(height: 10),
@@ -711,7 +720,7 @@ void _confirmClearCache(BuildContext context, AppModel model) {
 }
 
 const _projectUrl = 'https://github.com/yufenghub/EmoC';
-const _appVersionLabel = '1.0.2';
+const _appVersionLabel = '1.0.3';
 
 void _openAboutSheet(BuildContext context, AppModel model) {
   showModalBottomSheet<void>(

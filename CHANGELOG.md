@@ -8,6 +8,33 @@ All notable public changes to EmoC will be documented in this file.
 
 Public versions should match the version in `pubspec.yaml`.
 
+## [1.0.3] - 2026-07-13
+
+### 优化 / Improved
+
+- 重构长歌单歌曲与封面加载流程：首次准备 72 首，滑动到底后每批继续加载 36 首，兼顾完整内容与滚动性能。
+  Reworked long-playlist song and artwork loading: 72 songs are prepared initially and 36 more are revealed per batch near the bottom.
+- 保存每个歌单已经展开的歌曲数量；重启应用或切换封面显示后可恢复上次加载深度，清除缓存时才会重置。
+  Persisted each playlist's revealed high-water mark across restarts and cover-display changes; clearing the cache intentionally resets it.
+- 优化歌曲封面预加载、运行时缓存和重复请求合并，减少长歌单滚动时的重复下载与卡顿。
+  Improved artwork preloading, runtime caching, and duplicate-request coalescing to reduce repeated downloads and scrolling stutter.
+- 优化播放列表和当前歌曲状态恢复，重新进入应用后保留更完整的播放上下文。
+  Improved queue and current-song restoration so more playback context survives app restarts.
+
+### 修复 / Fixed
+
+- 修复从每日推荐切换到用户歌单歌曲后，软件界面动态取色可能停留在上一首歌曲颜色的问题。
+  Fixed dynamic color sometimes remaining on the previous song after switching from daily recommendations to a user playlist.
+- 将根主题更新与歌单封面加载通知分离，避免高频加载事件反复重启主题过渡动画。
+  Isolated root theme updates from artwork-loading notifications to prevent frequent events from repeatedly restarting theme transitions.
+- 修复同一歌单取色请求被高频轮询重复取消和重建的问题。
+  Fixed repeated cancellation and recreation of the same playlist color request during frequent playback polling.
+
+### 验证 / Verification
+
+- Flutter 静态分析通过，12 项自动化测试全部通过，并在 Android 模拟器验证推荐歌曲到用户歌单歌曲的动态取色切换。
+  Flutter analysis passed, all 12 automated tests passed, and the recommendation-to-playlist dynamic-color transition was verified on an Android emulator.
+
 ## [1.0.0] - 2026-07-02
 
 ### 新增 / Added

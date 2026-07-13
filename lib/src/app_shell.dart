@@ -9,12 +9,14 @@ class EmoCApp extends StatefulWidget {
 
 class _EmoCAppState extends State<EmoCApp> with WidgetsBindingObserver {
   late final AppModel model;
+  late final AppThemeState themeState;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     model = AppModel();
+    themeState = AppThemeState(model);
     unawaited(model.init());
   }
 
@@ -28,6 +30,7 @@ class _EmoCAppState extends State<EmoCApp> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    themeState.dispose();
     model.dispose();
     super.dispose();
   }
@@ -35,19 +38,21 @@ class _EmoCAppState extends State<EmoCApp> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: model,
+      animation: themeState,
       builder: (context, _) {
-        final activeTheme = model.useDarkTheme
-            ? EmoCTheme.dark(model.themeSeedColor)
-            : EmoCTheme.light(model.themeSeedColor);
+        final appThemeMode = switch (model.themeMode) {
+          'light' => ThemeMode.light,
+          'dark' => ThemeMode.dark,
+          _ => ThemeMode.system,
+        };
         return AppScope(
           model: model,
           child: MaterialApp(
             debugShowCheckedModeBanner: false,
             title: 'EmoC',
-            theme: activeTheme,
-            darkTheme: activeTheme,
-            themeMode: ThemeMode.light,
+            theme: EmoCTheme.light(model.themeSeedColor),
+            darkTheme: EmoCTheme.dark(model.themeSeedColor),
+            themeMode: appThemeMode,
             themeAnimationDuration: const Duration(milliseconds: 520),
             themeAnimationCurve: Curves.easeInOutCubic,
             builder: (context, child) {
@@ -78,6 +83,46 @@ class _EmoCAppState extends State<EmoCApp> with WidgetsBindingObserver {
         );
       },
     );
+  }
+}
+
+/// Filters the busy application model down to values that affect MaterialApp.
+///
+/// Artwork preparation and playback polling can notify [AppModel] many times a
+/// second. Rebuilding MaterialApp for those events repeatedly restarts its
+/// theme animation, which is especially visible in large playlists.
+class AppThemeState extends ChangeNotifier {
+  AppThemeState(this.model)
+    : _themeMode = model.themeMode,
+      _systemDarkMode = model.systemDarkMode,
+      _seedArgb = model.themeSeedColor.toARGB32() {
+    model.addListener(_handleModelChanged);
+  }
+
+  final AppModel model;
+  String _themeMode;
+  bool _systemDarkMode;
+  int _seedArgb;
+
+  void _handleModelChanged() {
+    final nextThemeMode = model.themeMode;
+    final nextSystemDarkMode = model.systemDarkMode;
+    final nextSeedArgb = model.themeSeedColor.toARGB32();
+    if (_themeMode == nextThemeMode &&
+        _systemDarkMode == nextSystemDarkMode &&
+        _seedArgb == nextSeedArgb) {
+      return;
+    }
+    _themeMode = nextThemeMode;
+    _systemDarkMode = nextSystemDarkMode;
+    _seedArgb = nextSeedArgb;
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    model.removeListener(_handleModelChanged);
+    super.dispose();
   }
 }
 

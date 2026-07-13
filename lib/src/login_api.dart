@@ -35,10 +35,7 @@ class _SmsApiAttempt {
 }
 
 class _SmsApiResponse {
-  const _SmsApiResponse({
-    required this.statusCode,
-    required this.data,
-  });
+  const _SmsApiResponse({required this.statusCode, required this.data});
 
   final int statusCode;
   final Map<String, dynamic> data;
@@ -49,6 +46,11 @@ class SmsLoginApiClient {
   final Map<String, String> _cookies = <String, String>{};
 
   void reset() {
+    _cookies.clear();
+  }
+
+  void dispose() {
+    _client.close(force: true);
     _cookies.clear();
   }
 
@@ -312,7 +314,7 @@ class SmsLoginApiClient {
       }
     }
     if (verified && last.toUpperCase().contains('ENC')) {
-      last = '验证码已校验，但官网登录接口拒绝当前设备参数（ENC）';
+      last = '验证码已校验，但登录服务拒绝当前设备参数（ENC）';
     }
     return SmsLoginApiResult(
       success: false,
@@ -351,7 +353,9 @@ class SmsLoginApiClient {
 
   String get cookieHeader {
     if (_cookies.isEmpty) return '';
-    return _cookies.entries.map((entry) => '${entry.key}=${entry.value}').join('; ');
+    return _cookies.entries
+        .map((entry) => '${entry.key}=${entry.value}')
+        .join('; ');
   }
 
   String get csrfToken => _cookies['__csrf'] ?? '';
@@ -382,10 +386,7 @@ class SmsLoginApiClient {
     _captureCookies(response.headers[HttpHeaders.setCookieHeader] ?? const []);
     final text = await utf8.decodeStream(response);
     final data = _decodeMap(text);
-    return _SmsApiResponse(
-      statusCode: response.statusCode,
-      data: data,
-    );
+    return _SmsApiResponse(statusCode: response.statusCode, data: data);
   }
 
   void _captureCookies(List<String> setCookies) {

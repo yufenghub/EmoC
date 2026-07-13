@@ -13,7 +13,7 @@ class PlayerBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: model,
+      animation: Listenable.merge([model, model.playbackRevision]),
       builder: (context, _) =>
           _PlayerBarContent(model: model, canOpenSongDetail: canOpenSongDetail),
     );
@@ -34,6 +34,15 @@ class _PlayerBarContent extends StatelessWidget {
     final theme = Theme.of(context);
     final player = model.displayPlayer;
     final song = player.asMirrorItem();
+    final coverUrl = [
+      player.coverUrl,
+      model.coverFor(song),
+    ].firstWhere((url) => url.startsWith('http'), orElse: () => '');
+    if (model.showSongCovers &&
+        !coverUrl.startsWith('http') &&
+        song.id.isNotEmpty) {
+      unawaited(model.ensureSongCover(song));
+    }
     return Container(
       decoration: BoxDecoration(
         color: theme.colorScheme.surface,
@@ -59,22 +68,25 @@ class _PlayerBarContent extends StatelessWidget {
                     color: theme.colorScheme.surfaceContainerHighest,
                     borderRadius: BorderRadius.circular(8),
                   ),
-                  child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 220),
-                    switchInCurve: Curves.easeOutCubic,
-                    switchOutCurve: Curves.easeInCubic,
-                    transitionBuilder: (child, animation) {
-                      return FadeTransition(
-                        opacity: animation,
-                        child: ScaleTransition(scale: animation, child: child),
-                      );
-                    },
-                    child: Icon(
-                      player.playing ? Icons.graphic_eq : Icons.music_note,
-                      key: ValueKey('cover-state-${player.playing}'),
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: model.showSongCovers
+                      ? CoverImage(
+                          key: const ValueKey('player-cover'),
+                          url: coverUrl,
+                          identity: player.songId.isNotEmpty
+                              ? player.songId
+                              : '${player.title}|${player.displayArtist}',
+                          fallbackIcon: player.playing
+                              ? Icons.graphic_eq
+                              : Icons.music_note,
+                          onAllCandidatesFailed: () => unawaited(
+                            model.ensureSongCover(song, force: true),
+                          ),
+                        )
+                      : Icon(
+                          player.playing ? Icons.graphic_eq : Icons.music_note,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
                 ),
               ),
               const SizedBox(width: 10),
@@ -113,64 +125,88 @@ class _PlayerBarContent extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 4),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              IconButton(
-                tooltip: '上一首',
-                onPressed: () => model.playerControl('previous'),
-                icon: const Icon(Icons.skip_previous),
-              ),
-              IconButton.filledTonal(
-                tooltip: model.player.playing ? '暂停' : '播放',
-                onPressed: () => model.playerControl('toggle'),
-                icon: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 180),
-                  transitionBuilder: (child, animation) {
-                    return ScaleTransition(
-                      scale: animation,
-                      child: FadeTransition(opacity: animation, child: child),
-                    );
-                  },
-                  child: Icon(
-                    player.playing ? Icons.pause : Icons.play_arrow,
-                    key: ValueKey(player.playing),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final extent = (constraints.maxWidth / 8)
+                  .clamp(36.0, 48.0)
+                  .toDouble();
+              final compactStyle = IconButton.styleFrom(
+                minimumSize: Size.square(extent),
+                maximumSize: Size.square(extent),
+                padding: EdgeInsets.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              );
+              return Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  IconButton(
+                    style: compactStyle,
+                    tooltip: '上一首',
+                    onPressed: () => model.playerControl('previous'),
+                    icon: const Icon(Icons.skip_previous),
                   ),
-                ),
-              ),
-              IconButton(
-                tooltip: '下一首',
-                onPressed: () => model.playerControl('next'),
-                icon: const Icon(Icons.skip_next),
-              ),
-              IconButton(
-                tooltip: '歌词',
-                onPressed: canOpenSongDetail
-                    ? () => _openSongDetailPage(context, model, song)
-                    : null,
-                icon: const Icon(Icons.lyrics),
-              ),
-              IconButton(
-                tooltip: '收藏',
-                onPressed: () => _openFavoriteSheet(context, model),
-                icon: const Icon(Icons.favorite_border),
-              ),
-              IconButton(
-                tooltip: '音量',
-                onPressed: () => _openVolumeSheet(context, model),
-                icon: const Icon(Icons.volume_up),
-              ),
-              IconButton(
-                tooltip: _modeLabel(player.mode),
-                onPressed: () => model.playerControl('mode'),
-                icon: Icon(_modeIcon(player.mode)),
-              ),
-              IconButton(
-                tooltip: '播放列表',
-                onPressed: () => _openQueueSheet(context, model),
-                icon: const Icon(Icons.queue_music),
-              ),
-            ],
+                  IconButton.filledTonal(
+                    style: compactStyle,
+                    tooltip: model.player.playing ? '暂停' : '播放',
+                    onPressed: () => model.playerControl('toggle'),
+                    icon: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 180),
+                      transitionBuilder: (child, animation) {
+                        return ScaleTransition(
+                          scale: animation,
+                          child: FadeTransition(
+                            opacity: animation,
+                            child: child,
+                          ),
+                        );
+                      },
+                      child: Icon(
+                        player.playing ? Icons.pause : Icons.play_arrow,
+                        key: ValueKey(player.playing),
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    style: compactStyle,
+                    tooltip: '下一首',
+                    onPressed: () => model.playerControl('next'),
+                    icon: const Icon(Icons.skip_next),
+                  ),
+                  IconButton(
+                    style: compactStyle,
+                    tooltip: '歌词',
+                    onPressed: canOpenSongDetail
+                        ? () => _openSongDetailPage(context, model, song)
+                        : null,
+                    icon: const Icon(Icons.lyrics),
+                  ),
+                  IconButton(
+                    style: compactStyle,
+                    tooltip: '收藏',
+                    onPressed: () => _openFavoriteSheet(context, model),
+                    icon: const Icon(Icons.favorite_border),
+                  ),
+                  IconButton(
+                    style: compactStyle,
+                    tooltip: '音量',
+                    onPressed: () => _openVolumeSheet(context, model),
+                    icon: const Icon(Icons.volume_up),
+                  ),
+                  IconButton(
+                    style: compactStyle,
+                    tooltip: _modeLabel(player.mode),
+                    onPressed: () => model.playerControl('mode'),
+                    icon: Icon(_modeIcon(player.mode)),
+                  ),
+                  IconButton(
+                    style: compactStyle,
+                    tooltip: '播放列表',
+                    onPressed: () => _openQueueSheet(context, model),
+                    icon: const Icon(Icons.queue_music),
+                  ),
+                ],
+              );
+            },
           ),
         ],
       ),

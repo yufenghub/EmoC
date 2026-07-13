@@ -114,6 +114,20 @@ Map<int, String> _lyricTimedMap(String raw) {
   return result;
 }
 
+String? _translationAt(Map<int, String> translations, double time) {
+  if (translations.isEmpty) return null;
+  final key = (time * 100).round();
+  final exact = translations[key];
+  if (exact != null) return exact;
+  for (var delta = 1; delta <= 35; delta++) {
+    final before = translations[key - delta];
+    if (before != null) return before;
+    final after = translations[key + delta];
+    if (after != null) return after;
+  }
+  return null;
+}
+
 List<String> _mergedLyricLines(String raw, String translated) {
   final original = _lyricTimedLines(raw);
   final translationMap = _lyricTimedMap(translated);
@@ -122,7 +136,7 @@ List<String> _mergedLyricLines(String raw, String translated) {
   }
   return original
       .map((line) {
-        final translation = translationMap[(line.time * 100).round()];
+        final translation = _translationAt(translationMap, line.time);
         if (translation == null ||
             translation.isEmpty ||
             translation == line.text) {
@@ -139,7 +153,7 @@ List<LyricLine> _mergedLyricTimedLines(String raw, String translated) {
   if (original.isEmpty || translationMap.isEmpty) return original;
   return original
       .map((line) {
-        final translation = translationMap[(line.time * 100).round()];
+        final translation = _translationAt(translationMap, line.time);
         if (translation == null ||
             translation.isEmpty ||
             translation == line.text) {

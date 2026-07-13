@@ -8,10 +8,12 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.net.wifi.WifiManager
 import androidx.core.app.NotificationCompat
 
 class PlaybackKeepAliveService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
     private var lastTitle = "EmoC"
     private var lastArtist = "正在播放"
 
@@ -39,6 +41,7 @@ class PlaybackKeepAliveService : Service() {
                 .build()
         )
         acquireWakeLock()
+        acquireWifiLock()
         return START_STICKY
     }
 
@@ -62,6 +65,7 @@ class PlaybackKeepAliveService : Service() {
 
     override fun onDestroy() {
         releaseWakeLock()
+        releaseWifiLock()
         super.onDestroy()
     }
 
@@ -85,6 +89,26 @@ class PlaybackKeepAliveService : Service() {
             }
         }
         wakeLock = null
+    }
+
+    private fun acquireWifiLock() {
+        val existing = wifiLock
+        if (existing?.isHeld == true) return
+        val manager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        wifiLock = manager.createWifiLock(
+            WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+            "EmoC:PlaybackWifi"
+        ).apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+    }
+
+    private fun releaseWifiLock() {
+        wifiLock?.let { lock ->
+            if (lock.isHeld) lock.release()
+        }
+        wifiLock = null
     }
 
     private fun createNotificationChannel() {

@@ -96,7 +96,7 @@ class SectionHeader extends StatelessWidget {
   }
 }
 
-class SongList extends StatelessWidget {
+class SongList extends StatefulWidget {
   const SongList({
     required this.songs,
     required this.loading,
@@ -109,19 +109,50 @@ class SongList extends StatelessWidget {
   final String emptyText;
 
   @override
+  State<SongList> createState() => _SongListState();
+}
+
+class _SongListState extends State<SongList> {
+  String _scheduledSignature = '';
+
+  void _scheduleArtworkPreload(AppModel model) {
+    final signature = [
+      model.showSongCovers,
+      widget.songs.length,
+      for (final song in widget.songs) _songArtworkIdentity(song),
+    ].join('|');
+    if (_scheduledSignature == signature) return;
+    _scheduledSignature = signature;
+    if (!model.showSongCovers || widget.songs.isEmpty) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _scheduledSignature != signature) return;
+      unawaited(model.prepareSongArtworkBatch(widget.songs));
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final model = AppScope.of(context);
+    _scheduleArtworkPreload(model);
     return Column(
       children: [
-        if (songs.isEmpty && loading)
+        if (widget.songs.isEmpty && widget.loading)
           for (var i = 0; i < 8; i++) ...[
             const SongPlaceholderTile(),
             const SizedBox(height: 8),
           ]
-        else if (songs.isEmpty)
-          EmptyPanel(icon: Icons.music_off, text: emptyText)
+        else if (widget.songs.isEmpty)
+          EmptyPanel(icon: Icons.music_off, text: widget.emptyText)
         else
-          for (var i = 0; i < songs.length; i++) ...[
-            SongTile(song: songs[i], sourceList: songs, sourceIndex: i),
+          for (var i = 0; i < widget.songs.length; i++) ...[
+            PreparedSongTile(
+              key: ValueKey(
+                'song-${widget.songs[i].id}-${widget.songs[i].title}-${widget.songs[i].href}',
+              ),
+              song: widget.songs[i],
+              sourceList: widget.songs,
+              sourceIndex: i,
+            ),
             const SizedBox(height: 8),
           ],
       ],
@@ -180,12 +211,13 @@ class SongPlaceholderTile extends StatelessWidget {
   }
 }
 
-class SongTile extends StatelessWidget {
-  const SongTile({
+class PreparedSongTile extends StatefulWidget {
+  const PreparedSongTile({
     required this.song,
     required this.sourceList,
     required this.sourceIndex,
     this.active = false,
+    this.dynamicColorSource = 'daily',
     super.key,
   });
 
@@ -193,6 +225,108 @@ class SongTile extends StatelessWidget {
   final List<MirrorItem> sourceList;
   final int sourceIndex;
   final bool active;
+  final String dynamicColorSource;
+
+  @override
+  State<PreparedSongTile> createState() => _PreparedSongTileState();
+}
+
+class _PreparedSongTileState extends State<PreparedSongTile> {
+  bool _preparing = false;
+  bool _allowArtworkFallback = false;
+  int _generation = 0;
+  int _retryCount = 0;
+  Timer? _retryTimer;
+
+  @override
+  void didUpdateWidget(covariant PreparedSongTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_songArtworkIdentity(oldWidget.song) !=
+        _songArtworkIdentity(widget.song)) {
+      _generation += 1;
+      _preparing = false;
+      _allowArtworkFallback = false;
+      _retryCount = 0;
+      _retryTimer?.cancel();
+    }
+  }
+
+  @override
+  void dispose() {
+    _retryTimer?.cancel();
+    super.dispose();
+  }
+
+  void _prepare(AppModel model) {
+    if (_preparing || !model.showSongCovers) return;
+    _preparing = true;
+    final generation = _generation;
+    unawaited(
+      model
+          .prepareSongArtwork(widget.song)
+          .timeout(const Duration(milliseconds: 1800), onTimeout: () => false)
+          .then((ready) {
+            if (!mounted || generation != _generation) return;
+            _preparing = false;
+            if (ready) {
+              _retryCount = 0;
+              setState(() {});
+              return;
+            }
+            _allowArtworkFallback = true;
+            setState(() {});
+            _retryCount += 1;
+            final retryDelay = Duration(
+              milliseconds: (1100 * (1 << _retryCount.clamp(0, 3)))
+                  .clamp(1100, 12000)
+                  .toInt(),
+            );
+            _retryTimer?.cancel();
+            _retryTimer = Timer(retryDelay, () {
+              if (mounted && generation == _generation) {
+                _prepare(model);
+              }
+            });
+          }),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final model = AppScope.of(context);
+    final ready =
+        !model.showSongCovers || model.isSongArtworkReady(widget.song);
+    if (!ready && !_allowArtworkFallback) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _prepare(model);
+      });
+      return const SongPlaceholderTile();
+    }
+    return SongTile(
+      song: widget.song,
+      sourceList: widget.sourceList,
+      sourceIndex: widget.sourceIndex,
+      active: widget.active,
+      dynamicColorSource: widget.dynamicColorSource,
+    );
+  }
+}
+
+class SongTile extends StatelessWidget {
+  const SongTile({
+    required this.song,
+    required this.sourceList,
+    required this.sourceIndex,
+    this.active = false,
+    this.dynamicColorSource = 'daily',
+    super.key,
+  });
+
+  final MirrorItem song;
+  final List<MirrorItem> sourceList;
+  final int sourceIndex;
+  final bool active;
+  final String dynamicColorSource;
 
   @override
   Widget build(BuildContext context) {
@@ -209,6 +343,10 @@ class SongTile extends StatelessWidget {
             theme.cardTheme.color ?? theme.colorScheme.surface,
           )
         : theme.cardTheme.color;
+    final coverUrl = model.coverFor(song);
+    if (model.showSongCovers && !coverUrl.startsWith('http')) {
+      unawaited(model.ensureSongCover(song));
+    }
     return SizedBox(
       height: _songTileHeight,
       child: Material(
@@ -220,26 +358,19 @@ class SongTile extends StatelessWidget {
             song,
             fromList: sourceList,
             sourceIndex: sourceIndex,
+            dynamicColorSource: dynamicColorSource,
           ),
           child: Padding(
             padding: const EdgeInsets.all(12),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                Container(
-                  width: 38,
-                  height: 38,
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Icon(
-                    Icons.music_note,
-                    size: 20,
-                    color: active
-                        ? activeColor
-                        : theme.colorScheme.onSurfaceVariant,
-                  ),
+                SongArtwork(
+                  url: coverUrl,
+                  active: active,
+                  showCover: model.showSongCovers,
+                  onCoverError: () =>
+                      unawaited(model.ensureSongCover(song, force: true)),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
@@ -276,6 +407,45 @@ class SongTile extends StatelessWidget {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class SongArtwork extends StatelessWidget {
+  const SongArtwork({
+    required this.url,
+    this.active = false,
+    this.showCover = true,
+    this.onCoverError,
+    super.key,
+  });
+
+  final String url;
+  final bool active;
+  final bool showCover;
+  final VoidCallback? onCoverError;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 38,
+      height: 38,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: showCover
+            ? CoverImage(
+                url: url,
+                fallbackIcon: active ? Icons.graphic_eq : Icons.music_note,
+                onAllCandidatesFailed: onCoverError,
+              )
+            : ColoredBox(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                child: Icon(
+                  active ? Icons.graphic_eq : Icons.music_note,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
       ),
     );
   }
@@ -616,15 +786,188 @@ int? _playlistSongCount(MirrorItem playlist) {
   return int.tryParse(matches.last.group(1) ?? '');
 }
 
-class CoverImage extends StatelessWidget {
+class CoverImage extends StatefulWidget {
   const CoverImage({
     required this.url,
+    this.identity = '',
     this.fallbackIcon = Icons.music_note,
+    this.onAllCandidatesFailed,
     super.key,
   });
 
   final String url;
+  final String identity;
   final IconData fallbackIcon;
+  final VoidCallback? onAllCandidatesFailed;
+
+  @override
+  State<CoverImage> createState() => _CoverImageState();
+}
+
+class _CoverImageState extends State<CoverImage> {
+  late List<String> _candidates;
+  final Set<String> _decodeFailures = <String>{};
+  Uint8List? _bytes;
+  String _loadedUrl = '';
+  int _loadGeneration = 0;
+  int _retryCount = 0;
+  bool _failureNotified = false;
+  Timer? _staleHoldTimer;
+  Timer? _externalRetryTimer;
+  int _externalResolveRetryCount = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    CoverRuntimeCache.instance.addListener(_handleRuntimeCacheChanged);
+    _resetLoader();
+  }
+
+  @override
+  void dispose() {
+    _staleHoldTimer?.cancel();
+    _externalRetryTimer?.cancel();
+    CoverRuntimeCache.instance.removeListener(_handleRuntimeCacheChanged);
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant CoverImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.url == widget.url && oldWidget.identity == widget.identity) {
+      return;
+    }
+    _resetLoader(keepPrevious: true);
+  }
+
+  void _resetLoader({bool keepPrevious = false}) {
+    _staleHoldTimer?.cancel();
+    _externalRetryTimer?.cancel();
+    _loadGeneration += 1;
+    _candidates = _coverImageCandidates(widget.url);
+    _decodeFailures.clear();
+    if (!keepPrevious) {
+      _bytes = null;
+      _loadedUrl = '';
+    }
+    _retryCount = 0;
+    _failureNotified = false;
+    _externalResolveRetryCount = 0;
+    _startLoad();
+    if (keepPrevious && _candidates.isEmpty && _bytes != null) {
+      final generation = _loadGeneration;
+      _staleHoldTimer = Timer(const Duration(milliseconds: 2200), () {
+        if (!mounted ||
+            generation != _loadGeneration ||
+            _candidates.isNotEmpty) {
+          return;
+        }
+        setState(() {
+          _bytes = null;
+          _loadedUrl = '';
+        });
+      });
+    }
+  }
+
+  void _handleRuntimeCacheChanged() {
+    if (!mounted || _candidates.isEmpty) return;
+    final cached = CoverRuntimeCache.instance.lookup(_candidates);
+    if (cached == null || (_bytes != null && _loadedUrl == cached.url)) return;
+    _staleHoldTimer?.cancel();
+    setState(() {
+      _bytes = cached.bytes;
+      _loadedUrl = cached.url;
+    });
+  }
+
+  void _startLoad() {
+    final available = _candidates
+        .where((url) => !_decodeFailures.contains(url))
+        .toList(growable: false);
+    final cached = CoverRuntimeCache.instance.lookup(available);
+    if (cached != null) {
+      _bytes = cached.bytes;
+      _loadedUrl = cached.url;
+      return;
+    }
+    if (available.isEmpty) {
+      _notifyAllCandidatesFailed();
+      return;
+    }
+    final generation = ++_loadGeneration;
+    unawaited(
+      CoverRuntimeCache.instance.load(available).then((entry) {
+        if (!mounted || generation != _loadGeneration) return;
+        if (entry == null) {
+          _scheduleRetryOrNotify();
+          return;
+        }
+        setState(() {
+          _staleHoldTimer?.cancel();
+          _bytes = entry.bytes;
+          _loadedUrl = entry.url;
+        });
+      }),
+    );
+  }
+
+  void _scheduleRetryOrNotify() {
+    if (_retryCount >= 2) {
+      _notifyAllCandidatesFailed();
+      return;
+    }
+    _retryCount += 1;
+    final generation = _loadGeneration;
+    final delay = _retryCount == 1
+        ? const Duration(milliseconds: 700)
+        : const Duration(milliseconds: 1500);
+    unawaited(
+      Future<void>.delayed(delay, () {
+        if (!mounted || generation != _loadGeneration) return;
+        _decodeFailures.clear();
+        _failureNotified = false;
+        _startLoad();
+      }),
+    );
+  }
+
+  void _handleDecodeFailure() {
+    if (_loadedUrl.isEmpty || _decodeFailures.contains(_loadedUrl)) return;
+    _decodeFailures.add(_loadedUrl);
+    CoverRuntimeCache.instance.evict(_loadedUrl);
+    _bytes = null;
+    _loadedUrl = '';
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(_startLoad);
+    });
+  }
+
+  void _notifyAllCandidatesFailed() {
+    if (_failureNotified || widget.onAllCandidatesFailed == null) return;
+    _failureNotified = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) widget.onAllCandidatesFailed?.call();
+    });
+    if (_candidates.isEmpty && _externalResolveRetryCount < 2) {
+      _externalResolveRetryCount += 1;
+      final generation = _loadGeneration;
+      final delay = _externalResolveRetryCount == 1
+          ? const Duration(milliseconds: 1600)
+          : const Duration(milliseconds: 3800);
+      _externalRetryTimer?.cancel();
+      _externalRetryTimer = Timer(delay, () {
+        if (!mounted ||
+            generation != _loadGeneration ||
+            _candidates.isNotEmpty) {
+          return;
+        }
+        _failureNotified = false;
+        _notifyAllCandidatesFailed();
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -634,20 +977,69 @@ class CoverImage extends StatelessWidget {
         color: theme.colorScheme.surfaceContainerHighest,
       ),
       child: Center(
-        child: Icon(fallbackIcon, color: theme.colorScheme.onSurfaceVariant),
+        child: Icon(
+          widget.fallbackIcon,
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
       ),
     );
-    if (!url.startsWith('http')) return placeholder;
-    return Image.network(
-      url.contains('?') ? url : '$url?param=360y360',
-      fit: BoxFit.cover,
-      width: double.infinity,
-      height: double.infinity,
-      errorBuilder: (_, _, _) => placeholder,
-      loadingBuilder: (context, child, event) =>
-          event == null ? child : placeholder,
+    final bytes = _bytes;
+    if (_candidates.isEmpty) {
+      _notifyAllCandidatesFailed();
+      if (bytes == null) return placeholder;
+    }
+    if (bytes == null) return placeholder;
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 240),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeInCubic,
+      child: Image.memory(
+        bytes,
+        key: ValueKey('cover-bytes-$_loadedUrl'),
+        fit: BoxFit.cover,
+        width: double.infinity,
+        height: double.infinity,
+        cacheWidth: 192,
+        cacheHeight: 192,
+        filterQuality: FilterQuality.medium,
+        gaplessPlayback: true,
+        errorBuilder: (_, _, _) {
+          _handleDecodeFailure();
+          return placeholder;
+        },
+      ),
     );
   }
+}
+
+List<String> _coverImageCandidates(String rawUrl) {
+  var normalized = _absoluteMusicUrl(rawUrl).trim();
+  if (normalized.startsWith('//')) normalized = 'https:$normalized';
+  if (!normalized.startsWith('http')) return const [];
+  final candidates = <String>{};
+
+  void addVariants(String value) {
+    final https = value.startsWith('http://')
+        ? value.replaceFirst('http://', 'https://')
+        : value;
+    final base = https.split('?').first;
+    candidates
+      ..add('$base?param=360y360')
+      ..add('$base?param=180y180')
+      ..add(https)
+      ..add(base);
+  }
+
+  addVariants(normalized);
+  for (final host in const [
+    'p1.music.126.net',
+    'p2.music.126.net',
+    'p3.music.126.net',
+    'p4.music.126.net',
+  ]) {
+    addVariants(normalized.replaceFirst(RegExp(r'p\d\.music\.126\.net'), host));
+  }
+  return candidates.toList(growable: false);
 }
 
 class SettingsTile extends StatelessWidget {
