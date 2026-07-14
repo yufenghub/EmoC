@@ -720,7 +720,7 @@ void _confirmClearCache(BuildContext context, AppModel model) {
 }
 
 const _projectUrl = 'https://github.com/yufenghub/EmoC';
-const _appVersionLabel = '1.0.3';
+const _appVersionLabel = '1.0.4';
 
 void _openAboutSheet(BuildContext context, AppModel model) {
   showModalBottomSheet<void>(

@@ -325,7 +325,7 @@ void _openFavoriteSheet(BuildContext context, AppModel model) {
       .where((item) => item.id.isNotEmpty)
       .toList(growable: false);
   if (playlists.isEmpty) {
-    unawaited(model.playerControl('favorite'));
+    unawaited(model.likeCurrentSong());
     return;
   }
   showModalBottomSheet<void>(

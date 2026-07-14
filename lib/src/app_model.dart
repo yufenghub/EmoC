@@ -25,6 +25,7 @@ class AppModel extends ChangeNotifier {
   Timer? _coverCachePersistTimer;
   Timer? _currentPlaylistPersistTimer;
   Timer? _playlistRevealPersistTimer;
+  Timer? _autoAdvanceWatchdog;
   bool _dynamicThemeGuardRefreshInProgress = false;
   int _playRequestId = 0;
   int _loginFlowGeneration = 0;
@@ -38,6 +39,8 @@ class AppModel extends ChangeNotifier {
   final Map<String, int> _activeSnapshotRequests = <String, int>{};
   final Map<int, Completer<void>> _snapshotWaiters = <int, Completer<void>>{};
   final SmsLoginApiClient _smsLoginApiClient = SmsLoginApiClient();
+  final MusicMutationApiClient _musicMutationApiClient =
+      MusicMutationApiClient();
 
   bool ready = false;
   String themeMode = 'system';
@@ -448,6 +451,7 @@ class AppModel extends ChangeNotifier {
     _coverCachePersistTimer?.cancel();
     _currentPlaylistPersistTimer?.cancel();
     _playlistRevealPersistTimer?.cancel();
+    _autoAdvanceWatchdog?.cancel();
     for (final waiter in _songCoverWaiters) {
       if (!waiter.isCompleted) waiter.complete();
     }
@@ -1098,6 +1102,19 @@ class AppModel extends ChangeNotifier {
       );
       await NativeBridge.setString('cacheRecentPlaylistId', playlistId);
       await NativeBridge.setString('cacheRecentPlaylistSongs', payload);
+    } catch (_) {}
+  }
+
+  Future<void> _invalidatePlaylistSongsCache(String playlistId) async {
+    if (playlistId.isEmpty) return;
+    _playlistSongCache.remove(playlistId);
+    try {
+      final cachedId = await NativeBridge.getString('cacheRecentPlaylistId');
+      if (cachedId != playlistId) return;
+      await Future.wait(<Future<void>>[
+        NativeBridge.removeString('cacheRecentPlaylistId'),
+        NativeBridge.removeString('cacheRecentPlaylistSongs'),
+      ]);
     } catch (_) {}
   }
 
@@ -2781,99 +2798,6 @@ class AppModel extends ChangeNotifier {
     return jsonDecode(body);
   }
 
-  Future<dynamic> _postMusicForm(
-    Uri uri,
-    Map<String, String> fields, {
-    String referer = 'https://music.163.com/',
-  }) async {
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 8)
-      ..idleTimeout = const Duration(seconds: 8);
-    try {
-      final cookie = await NativeBridge.getCookies(
-        'https://music.163.com/',
-      ).timeout(const Duration(seconds: 2), onTimeout: () => '');
-      final csrf = _csrfFromCookie(cookie);
-      final bodyFields = <String, String>{...fields, 'csrf_token': csrf};
-      final requestUri = uri.replace(
-        queryParameters: <String, String>{
-          ...uri.queryParameters,
-          if (csrf.isNotEmpty) 'csrf_token': csrf,
-        },
-      );
-      final body = bodyFields.entries
-          .map(
-            (entry) =>
-                '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}',
-          )
-          .join('&');
-      final request = await client
-          .postUrl(requestUri)
-          .timeout(const Duration(seconds: 8));
-      request.headers.set(HttpHeaders.userAgentHeader, _desktopUserAgent);
-      request.headers.set(HttpHeaders.acceptHeader, 'application/json');
-      request.headers.set(HttpHeaders.refererHeader, referer);
-      request.headers.set('Origin', 'https://music.163.com');
-      request.headers.set(
-        HttpHeaders.contentTypeHeader,
-        'application/x-www-form-urlencoded;charset=UTF-8',
-      );
-      if (cookie.isNotEmpty) {
-        request.headers.set(HttpHeaders.cookieHeader, cookie);
-      }
-      request.write(body);
-      final response = await request.close().timeout(
-        const Duration(seconds: 10),
-      );
-      final responseBody = await response
-          .transform(utf8.decoder)
-          .join()
-          .timeout(const Duration(seconds: 10));
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw HttpException('HTTP ${response.statusCode}', uri: requestUri);
-      }
-      return jsonDecode(responseBody);
-    } finally {
-      client.close(force: true);
-    }
-  }
-
-  String _csrfFromCookie(String cookie) {
-    final match = RegExp(r'(?:^|;\s*)__csrf=([^;]+)').firstMatch(cookie);
-    return match == null ? '' : Uri.decodeComponent(match.group(1)!);
-  }
-
-  bool _musicApiSucceeded(dynamic decoded) {
-    final map = _mapOf(decoded);
-    final code = _intOf(map['code'] ?? map['status']);
-    if (code == 200 || code == 201 || code == 204) return true;
-    final data = map['data'] ?? map['result'];
-    if (data is Map) {
-      final nested = _intOf(data['code'] ?? data['status']);
-      if (nested == 200 || nested == 201 || nested == 204) return true;
-    }
-    final text = decoded is String ? decoded : jsonEncode(decoded);
-    return text.contains('"code":200') ||
-        text.contains('"code":201') ||
-        text.contains('"code":204');
-  }
-
-  String _musicApiMessage(dynamic decoded) {
-    final map = _mapOf(decoded);
-    final message = _stringOf(
-      map['message'] ?? map['msg'] ?? map['error'] ?? map['desc'],
-    );
-    if (message.isNotEmpty) return message;
-    final data = map['data'] ?? map['result'];
-    if (data is Map) {
-      final nested = _stringOf(
-        data['message'] ?? data['msg'] ?? data['error'] ?? data['desc'],
-      );
-      if (nested.isNotEmpty) return nested;
-    }
-    return decoded is String ? decoded : jsonEncode(decoded);
-  }
-
   Future<List<MirrorItem>> _playlistSongsFromApiResponse(
     dynamic decoded,
     String playlistId,
@@ -3213,19 +3137,24 @@ class AppModel extends ChangeNotifier {
     notifyListeners();
     unawaited(_runJavaScript(_silenceOfficialAudioScript));
     if (requestId != _playRequestId) return;
-    final directResult = await _requestSongUrlDirect(song, requestId);
+    final requestTimeout = autoAdvance
+        ? const Duration(seconds: 10)
+        : const Duration(seconds: 14);
+    final directResult = await _requestSongUrlDirect(song, requestId).timeout(
+      requestTimeout,
+      onTimeout: () => <String, dynamic>{
+        'type': 'songUrl',
+        'requestId': requestId,
+        'songId': song.id,
+        'title': song.title,
+        'artist': song.subtitle,
+        'coverUrl': coverFor(song),
+        'message': '播放地址请求超时',
+        'directApi': true,
+      },
+    );
     if (requestId != _playRequestId) return;
     await _handleSongUrl(directResult);
-    unawaited(
-      Future<void>.delayed(const Duration(seconds: 8), () {
-        if (_playRequestId == requestId &&
-            _nativePlaybackPending &&
-            _pendingSong == song) {
-          _nativePlaybackPending = false;
-          _handleBlockedPendingSong('播放地址请求超时，请刷新后重试', autoSkip: autoAdvance);
-        }
-      }),
-    );
   }
 
   Future<Map<String, dynamic>> _requestSongUrlDirect(
@@ -3525,6 +3454,16 @@ class AppModel extends ChangeNotifier {
       }
       return;
     }
+    if (action == 'ended') {
+      final endedSongId = _stringOf(arguments['songId']);
+      if (endedSongId.isNotEmpty &&
+          player.songId.isNotEmpty &&
+          endedSongId != player.songId) {
+        return;
+      }
+      _handleNativeTrackEnded();
+      return;
+    }
     if (action == 'previous') {
       await playPrevious(autoAdvance: true);
       return;
@@ -3819,6 +3758,23 @@ class AppModel extends ChangeNotifier {
   void _handleNativeTrackEnded() {
     if (_autoAdvanceInProgress) return;
     _autoAdvanceInProgress = true;
+    final endedSongId = player.songId;
+    _autoAdvanceWatchdog?.cancel();
+    _autoAdvanceWatchdog = Timer(const Duration(seconds: 16), () {
+      if (!_autoAdvanceInProgress) return;
+      if (player.songId != endedSongId && player.playing) {
+        _autoAdvanceInProgress = false;
+        return;
+      }
+      if (_nativePlaybackPending && _pendingAutoAdvance) {
+        _handleBlockedPendingSong('自动续播超时', autoSkip: true);
+        return;
+      }
+      _autoAdvanceInProgress = false;
+      if (!_localPauseRequested && player.songId == endedSongId) {
+        _handleNativeTrackEnded();
+      }
+    });
     unawaited(_advanceAfterNativeEnd());
   }
 
@@ -3850,7 +3806,10 @@ class AppModel extends ChangeNotifier {
         resetSkipGuard: true,
       );
     } finally {
-      _autoAdvanceInProgress = false;
+      if (!_nativePlaybackPending || !_pendingAutoAdvance) {
+        _autoAdvanceInProgress = false;
+        _autoAdvanceWatchdog?.cancel();
+      }
     }
   }
 
@@ -4027,15 +3986,53 @@ class AppModel extends ChangeNotifier {
     }
     status = '正在收藏到：${playlist.title}';
     notifyListeners();
-    final payload = jsonEncode({
-      'songId': songId,
-      'playlistId': playlist.id,
-      'playlistTitle': playlist.title,
-      'playlistKind': playlist.kind,
-    });
-    await _runJavaScript(
-      'window.__EMOC_FAVORITE__ = $payload; $_favoriteSongScript',
-    );
+    try {
+      if (playlist.kind == 'liked') {
+        await _musicMutationApiClient.setSongLiked(songId, true);
+      } else {
+        await _musicMutationApiClient.addSongToPlaylist(playlist.id, songId);
+      }
+      await _invalidatePlaylistSongsCache(playlist.id);
+      status = '已收藏到：${playlist.title}';
+      _showNotice('收藏成功');
+      notifyListeners();
+      unawaited(loadLibrary());
+    } catch (error) {
+      status = '收藏失败：$error';
+      _showNotice('收藏失败：$error');
+      notifyListeners();
+    }
+  }
+
+  Future<void> likeCurrentSong() async {
+    final songId = player.songId.isNotEmpty
+        ? player.songId
+        : (currentSongIndex >= 0 && currentSongIndex < currentPlaylist.length
+              ? currentPlaylist[currentSongIndex].id
+              : '');
+    if (songId.isEmpty) {
+      _showNotice('当前歌曲 ID 不完整，无法收藏');
+      return;
+    }
+    status = '正在添加到我喜欢的音乐';
+    notifyListeners();
+    try {
+      await _musicMutationApiClient.setSongLiked(songId, true);
+      final likedPlaylists = libraryPlaylists
+          .where((item) => item.kind == 'liked')
+          .toList(growable: false);
+      if (likedPlaylists.isNotEmpty) {
+        await _invalidatePlaylistSongsCache(likedPlaylists.first.id);
+      }
+      status = '已添加到我喜欢的音乐';
+      _showNotice('收藏成功');
+      notifyListeners();
+      unawaited(loadLibrary());
+    } catch (error) {
+      status = '收藏失败：$error';
+      _showNotice('收藏失败：$error');
+      notifyListeners();
+    }
   }
 
   void _clearPendingPlaybackRequest() {
@@ -4234,17 +4231,21 @@ class AppModel extends ChangeNotifier {
     }
     notifyListeners();
 
-    if (!autoSkip || blockedPlaylist.isEmpty) return;
+    if (!autoSkip || blockedPlaylist.isEmpty) {
+      _autoAdvanceInProgress = false;
+      return;
+    }
+    _autoAdvanceSkipGuard += 1;
     if (_autoAdvanceSkipGuard >= blockedPlaylist.length) {
       unawaited(NativeBridge.stopPlayer());
       _nativePlaybackActive = false;
+      _autoAdvanceInProgress = false;
       player = _playerWith(playing: false);
       status = '没有可播放歌曲';
       notifyListeners();
       return;
     }
 
-    _autoAdvanceSkipGuard += 1;
     final start = blockedIndex >= 0 ? blockedIndex : currentSongIndex;
     final nextIndex =
         (start + skipDirection + blockedPlaylist.length) %
@@ -4618,26 +4619,6 @@ class AppModel extends ChangeNotifier {
     }
   }
 
-  Future<String> _runJavaScriptReturningString(String source) async {
-    try {
-      final controller = await _ensureWebController();
-      if (controller == null) return '';
-      final result = await controller
-          .runJavaScriptReturningResult(source)
-          .timeout(const Duration(seconds: 12));
-      var text = _stringOf(result);
-      if (text.length >= 2 && text.startsWith('"') && text.endsWith('"')) {
-        final decoded = jsonDecode(text);
-        if (decoded is String) text = decoded;
-      }
-      return text;
-    } catch (error) {
-      status = 'Web 会话执行失败：$error';
-      notifyListeners();
-      return '';
-    }
-  }
-
   void _handleWebMessage(String raw) {
     try {
       final decoded = jsonDecode(raw);
@@ -4672,11 +4653,6 @@ class AppModel extends ChangeNotifier {
             : _stringOf(decoded['reason']);
         status = reason;
         _showNotice(reason);
-        notifyListeners();
-      } else if (type == 'favoriteResult') {
-        status = _stringOf(decoded['message']).isEmpty
-            ? '收藏请求已发送'
-            : _stringOf(decoded['message']);
         notifyListeners();
       } else {
         _handleSnapshot(decoded);
@@ -5233,22 +5209,38 @@ class AppModel extends ChangeNotifier {
     status = '正在新建歌单：$name';
     notifyListeners();
     try {
-      final decoded = await _postMusicForm(
-        Uri.https('music.163.com', '/api/playlist/create'),
-        <String, String>{'name': name, 'type': 'NORMAL', 'privacy': '0'},
-      );
-      final code = _intOf(_mapOf(decoded)['code']);
-      if (code != 200) {
-        throw StateError(
-          _stringOf(_mapOf(decoded)['message'] ?? _mapOf(decoded)['msg']),
+      final created = await _musicMutationApiClient.createPlaylist(name);
+      if (created.id.isNotEmpty) {
+        final createdPlaylist = MirrorItem(
+          domId: 'api_playlist_${created.id}',
+          kind: 'playlist',
+          title: created.name,
+          subtitle: '0 首',
+          imageUrl: '',
+          href: 'https://music.163.com/#/my/m/music/playlist?id=${created.id}',
         );
+        final current = _currentLibraryBase()
+            .where((item) => item.id != created.id)
+            .toList(growable: false);
+        _setLibraryPlaylists(<MirrorItem>[
+          ...current.where((item) => item.kind == 'liked'),
+          createdPlaylist,
+          ...current.where((item) => item.kind != 'liked'),
+        ]);
+        await _saveLibraryPlaylistCache();
       }
+      libraryLoading = false;
       status = '已新建歌单：$name';
-      await loadLibrary();
+      _showNotice('新建成功');
+      notifyListeners();
+      if (created.id.isEmpty) {
+        await Future<void>.delayed(const Duration(milliseconds: 1200));
+        await loadLibrary();
+      }
     } catch (error) {
       libraryLoading = false;
       status = '新建歌单失败：$error';
-      _showNotice('新建失败');
+      _showNotice('新建失败：$error');
       notifyListeners();
     }
   }
@@ -5296,6 +5288,7 @@ class AppModel extends ChangeNotifier {
     final original = libraryPlaylists;
     final originalBase = _libraryPlaylistsBase;
     final originalPinned = pinnedPlaylistIds;
+    final originalSelected = selectedLibraryPlaylist;
     _libraryPlaylistsBase = _currentLibraryBase()
         .where((item) => item.id != playlist.id)
         .toList(growable: false);
@@ -5309,94 +5302,26 @@ class AppModel extends ChangeNotifier {
     status = '正在删除歌单：${playlist.title}';
     notifyListeners();
     try {
-      await _deletePlaylistRemote(playlist.id);
+      await _musicMutationApiClient.deletePlaylist(playlist.id);
       status = '已删除歌单：${playlist.title}';
       _forgetPlaylistRevealCount(playlist.id);
+      await _invalidatePlaylistSongsCache(playlist.id);
       await NativeBridge.setString(
         'pinnedPlaylistIds',
         jsonEncode(pinnedPlaylistIds),
       );
       await _saveLibraryPlaylistCache();
+      _showNotice('删除成功');
       notifyListeners();
     } catch (error) {
       libraryPlaylists = original;
       _libraryPlaylistsBase = originalBase;
       pinnedPlaylistIds = originalPinned;
+      selectedLibraryPlaylist = originalSelected;
       status = '删除歌单失败：$error';
-      _showNotice('删除歌单失败');
+      _showNotice('删除歌单失败：$error');
       notifyListeners();
     }
-  }
-
-  Future<void> _deletePlaylistRemote(String playlistId) async {
-    final typedId = int.tryParse(playlistId) ?? playlistId;
-    final ids = jsonEncode([typedId]);
-    final now = DateTime.now().millisecondsSinceEpoch.toString();
-    final paths = const [
-      '/api/playlist/delete',
-      '/api/playlist/remove',
-      '/api/v6/playlist/delete',
-      '/api/v6/playlist/remove',
-    ];
-    final fieldAttempts = <Map<String, String>>[
-      {'id': playlistId},
-      {'ids': ids},
-      {'id': playlistId, 'ids': ids},
-    ];
-    Object? lastError;
-    try {
-      final cookie = await NativeBridge.getCookies(
-        'https://music.163.com/',
-      ).timeout(const Duration(seconds: 2), onTimeout: () => '');
-      final csrf = _csrfFromCookie(cookie);
-      final client = HttpClient()
-        ..connectionTimeout = const Duration(seconds: 8)
-        ..idleTimeout = const Duration(seconds: 8);
-      try {
-        for (final path in paths) {
-          for (final fields in fieldAttempts) {
-            try {
-              final decoded = await _getMusicJson(
-                client,
-                Uri.https('music.163.com', path, {
-                  ...fields,
-                  'csrf_token': csrf,
-                  'timestamp': now,
-                }),
-                cookie,
-              );
-              final map = _mapOf(decoded);
-              final code = _intOf(map['code']);
-              if (code == 200 || code == 204) return;
-              lastError = StateError(_stringOf(map['message'] ?? map['msg']));
-            } catch (error) {
-              lastError = error;
-            }
-          }
-        }
-      } finally {
-        client.close(force: true);
-      }
-    } catch (error) {
-      lastError = error;
-    }
-    for (final path in paths) {
-      for (final fields in fieldAttempts) {
-        try {
-          final decoded = await _postMusicForm(
-            Uri.https('music.163.com', path),
-            fields,
-          );
-          final map = _mapOf(decoded);
-          final code = _intOf(map['code']);
-          if (code == 200 || code == 204) return;
-          lastError = StateError(_stringOf(map['message'] ?? map['msg']));
-        } catch (error) {
-          lastError = error;
-        }
-      }
-    }
-    throw StateError(lastError?.toString() ?? '接口未确认成功');
   }
 
   Future<bool> removeSongFromPlaylist(
@@ -5416,9 +5341,12 @@ class AppModel extends ChangeNotifier {
     notifyListeners();
     try {
       if (playlist.kind == 'liked') {
-        await _unlikeSongRemote(song.id);
+        await _musicMutationApiClient.setSongLiked(song.id, false);
       } else {
-        await _deleteSongFromPlaylistRemote(playlist.id, song.id);
+        await _musicMutationApiClient.removeSongFromPlaylist(
+          playlist.id,
+          song.id,
+        );
       }
       status = '已删除：${song.title}';
       unawaited(_saveRecentPlaylistSongsCache(playlist.id, nextSongs));
@@ -5428,273 +5356,10 @@ class AppModel extends ChangeNotifier {
       playlistSongs = original;
       _playlistSongCache[playlist.id] = original;
       status = '删除失败：$error';
-      _showNotice('删除失败');
+      _showNotice('删除失败：$error');
       notifyListeners();
       return false;
     }
-  }
-
-  Future<void> _deleteSongFromPlaylistRemote(
-    String playlistId,
-    String songId,
-  ) async {
-    final typedSongId = int.tryParse(songId) ?? songId;
-    final trackIds = jsonEncode([typedSongId]);
-    final stringTrackIds = jsonEncode([songId]);
-    final trackObjects = jsonEncode([
-      <String, dynamic>{'id': typedSongId},
-    ]);
-    final now = DateTime.now().millisecondsSinceEpoch.toString();
-    final referer =
-        'https://music.163.com/#/my/m/music/playlist?id=$playlistId';
-    final paths = const [
-      '/api/playlist/manipulate/tracks',
-      '/api/v6/playlist/manipulate/tracks',
-      '/api/playlist/tracks',
-      '/api/v6/playlist/tracks',
-      '/api/playlist/delete/track',
-      '/api/playlist/delete/tracks',
-    ];
-    final fieldAttempts = <Map<String, String>>[
-      {
-        'op': 'del',
-        'pid': playlistId,
-        'trackIds': trackIds,
-        'tracks': trackIds,
-        'imme': 'true',
-      },
-      {
-        'op': 'del',
-        'pid': playlistId,
-        'trackIds': stringTrackIds,
-        'tracks': stringTrackIds,
-        'imme': 'true',
-      },
-      {
-        'op': 'del',
-        'pid': playlistId,
-        'trackIds': trackIds,
-        'ids': trackIds,
-        'imme': 'true',
-      },
-      {
-        'op': 'del',
-        'pid': playlistId,
-        'tracks': trackObjects,
-        'trackIds': trackIds,
-        'imme': 'true',
-      },
-      {
-        'op': 'del',
-        'pid': playlistId,
-        'trackId': songId,
-        'id': songId,
-        'ids': trackIds,
-        'imme': '1',
-      },
-      {
-        'op': 'delete',
-        'pid': playlistId,
-        'trackIds': trackIds,
-        'tracks': trackIds,
-        'imme': 'true',
-      },
-      {
-        'playlistId': playlistId,
-        'songId': songId,
-        'songIds': trackIds,
-        'trackIds': trackIds,
-      },
-    ];
-    final attempts =
-        <({String method, String path, Map<String, String> fields})>[];
-    for (final path in paths) {
-      for (final fields in fieldAttempts) {
-        attempts.add((method: 'GET', path: path, fields: fields));
-        attempts.add((method: 'POST', path: path, fields: fields));
-      }
-    }
-    Object? lastError;
-    try {
-      final cookie = await NativeBridge.getCookies(
-        'https://music.163.com/',
-      ).timeout(const Duration(seconds: 2), onTimeout: () => '');
-      final csrf = _csrfFromCookie(cookie);
-      final client = HttpClient()
-        ..connectionTimeout = const Duration(seconds: 8)
-        ..idleTimeout = const Duration(seconds: 8);
-      try {
-        for (final attempt in attempts) {
-          if (attempt.method != 'GET') continue;
-          try {
-            final decoded = await _getMusicJson(
-              client,
-              Uri.https('music.163.com', attempt.path, {
-                ...attempt.fields,
-                if (csrf.isNotEmpty) 'csrf_token': csrf,
-                'timestamp': now,
-              }),
-              cookie,
-              referer: referer,
-            );
-            if (_musicApiSucceeded(decoded)) return;
-            lastError = StateError(_musicApiMessage(decoded));
-          } catch (error) {
-            lastError = error;
-          }
-        }
-      } finally {
-        client.close(force: true);
-      }
-    } catch (error) {
-      lastError = error;
-    }
-    for (final attempt in attempts) {
-      if (attempt.method != 'POST') continue;
-      try {
-        final decoded = await _postMusicForm(
-          Uri.https('music.163.com', attempt.path),
-          attempt.fields,
-          referer: referer,
-        );
-        if (_musicApiSucceeded(decoded)) return;
-        lastError = StateError(_musicApiMessage(decoded));
-      } catch (error) {
-        lastError = error;
-      }
-    }
-    try {
-      if (await _deleteSongFromPlaylistViaWeb(playlistId, attempts)) return;
-    } catch (error) {
-      lastError = error;
-    }
-    throw StateError(lastError?.toString() ?? '接口未确认成功');
-  }
-
-  Future<bool> _deleteSongFromPlaylistViaWeb(
-    String playlistId,
-    List<({String method, String path, Map<String, String> fields})> attempts,
-  ) async {
-    final controller = await _ensureWebController();
-    if (controller == null) return false;
-    await _useDesktopWebSession();
-    if (!pageUrl.startsWith('https://music.163.com')) {
-      await controller.loadRequest(Uri.parse('https://music.163.com/'));
-      await Future<void>.delayed(const Duration(milliseconds: 700));
-    }
-    final webAttempts = attempts
-        .where((attempt) => attempt.path.contains('/manipulate/tracks'))
-        .take(18)
-        .toList(growable: false);
-    final encodedAttempts = jsonEncode(
-      webAttempts
-          .map(
-            (attempt) => <String, dynamic>{
-              'method': attempt.method,
-              'path': attempt.path,
-              'fields': attempt.fields,
-            },
-          )
-          .toList(growable: false),
-    );
-    final encodedPlaylistId = jsonEncode(playlistId);
-    final result = await _runJavaScriptReturningString('''
-(async () => {
-  const attempts = $encodedAttempts;
-  const playlistId = $encodedPlaylistId;
-  const csrfMatch = document.cookie.match(/(?:^|;)\\s*__csrf=([^;]+)/);
-  const csrf = csrfMatch ? decodeURIComponent(csrfMatch[1]) : '';
-  let last = '';
-  for (const attempt of attempts) {
-    try {
-      const params = new URLSearchParams(attempt.fields || {});
-      if (csrf) params.set('csrf_token', csrf);
-      params.set('timestamp', String(Date.now()));
-      const url = new URL(attempt.path, 'https://music.163.com');
-      let response;
-      if (attempt.method === 'GET') {
-        url.search = params.toString();
-        response = await fetch(url.toString(), {
-          credentials: 'include',
-          cache: 'no-store',
-          referrer: 'https://music.163.com/#/my/m/music/playlist?id=' + encodeURIComponent(playlistId),
-          headers: {
-            'Accept': 'application/json, text/plain, */*'
-          }
-        });
-      } else {
-        response = await fetch(url.toString(), {
-          method: 'POST',
-          credentials: 'include',
-          cache: 'no-store',
-          referrer: 'https://music.163.com/#/my/m/music/playlist?id=' + encodeURIComponent(playlistId),
-          headers: {
-            'Accept': 'application/json, text/plain, */*',
-            'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
-          },
-          body: params.toString()
-        });
-      }
-      const text = await response.text();
-      let data = {};
-      try { data = JSON.parse(text); } catch (_) {}
-      const nested = data && (data.data || data.result) || {};
-      const code = Number(data.code || data.status || nested.code || nested.status || 0);
-      if (response.ok && (code === 200 || code === 201 || code === 204 || /"code"\\s*:\\s*20[014]/.test(text))) {
-        return JSON.stringify({ ok: true, method: attempt.method, path: attempt.path });
-      }
-      last = text || ('HTTP ' + response.status);
-    } catch (error) {
-      last = String(error);
-    }
-  }
-  return JSON.stringify({ ok: false, error: last });
-})()
-''');
-    if (result.isEmpty) return false;
-    dynamic decoded;
-    try {
-      decoded = jsonDecode(result);
-      if (decoded is String) decoded = jsonDecode(decoded);
-    } catch (_) {
-      return false;
-    }
-    final map = _mapOf(decoded);
-    if (map['ok'] == true) return true;
-    final error = _stringOf(map['error']);
-    if (error.isNotEmpty) throw StateError(error);
-    return false;
-  }
-
-  Future<void> _unlikeSongRemote(String songId) async {
-    Object? lastError;
-    final attempts = <({Uri uri, Map<String, String> fields})>[
-      (
-        uri: Uri.https('music.163.com', '/api/radio/like'),
-        fields: <String, String>{
-          'alg': 'itembased',
-          'trackId': songId,
-          'like': 'false',
-          'time': DateTime.now().millisecondsSinceEpoch.toString(),
-        },
-      ),
-      (
-        uri: Uri.https('music.163.com', '/api/song/like'),
-        fields: <String, String>{'id': songId, 'like': 'false'},
-      ),
-    ];
-    for (final attempt in attempts) {
-      try {
-        final decoded = await _postMusicForm(attempt.uri, attempt.fields);
-        final map = _mapOf(decoded);
-        final code = _intOf(map['code']);
-        if (code == 200) return;
-        lastError = StateError(_stringOf(map['message'] ?? map['msg']));
-      } catch (error) {
-        lastError = error;
-      }
-    }
-    throw StateError(lastError?.toString() ?? '接口未确认成功');
   }
 
   void _handleSmsLogin(Map<String, dynamic> data) {
@@ -6000,6 +5665,8 @@ class AppModel extends ChangeNotifier {
       await NativeBridge.setPlayerVolume(desiredVolume);
       if (requestId > 0 && requestId != _playRequestId) return;
       player = _playerWith(playing: true);
+      _autoAdvanceInProgress = false;
+      _autoAdvanceWatchdog?.cancel();
       status = '正在播放：${player.title}';
       _clearPendingPlaybackRequest();
       notifyListeners();

@@ -169,10 +169,24 @@ class DesktopLyricsOverlayController(private val context: Context) {
         val nextBounds = screenBounds()
         val previousBounds = lastScreenBounds
         if (previousBounds == nextBounds) return
+        if (previousBounds != null) {
+            saveBounds(params, previousBounds)
+        }
         lastScreenBounds = nextBounds
+        if (
+            previousBounds != null &&
+            orientationKey(previousBounds) != orientationKey(nextBounds)
+        ) {
+            val saved = readSavedBounds(nextBounds, allowLegacyFallback = false)
+            if (saved != null) {
+                applySavedBounds(params, saved)
+            } else {
+                mapBoundsToDisplay(params, previousBounds, nextBounds)
+            }
+        }
         ensureReadableBounds(params, nextBounds)
         updateLayout(params)
-        saveBounds(params)
+        saveBounds(params, nextBounds)
     }
 
     fun release() {
@@ -259,6 +273,13 @@ class DesktopLyricsOverlayController(private val context: Context) {
 
     private data class ScreenBounds(val width: Int, val height: Int)
 
+    private data class SavedOverlayBounds(
+        val x: Int,
+        val y: Int,
+        val width: Int,
+        val height: Int
+    )
+
     private fun screenBounds(): ScreenBounds {
         displayRealSize()?.let { return it }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -294,6 +315,69 @@ class DesktopLyricsOverlayController(private val context: Context) {
         return ((bounds.width - width) / 2).coerceAtLeast(0)
     }
 
+    private fun orientationKey(bounds: ScreenBounds): String {
+        return if (bounds.width >= bounds.height) "landscape" else "portrait"
+    }
+
+    private fun orientationPrefKey(base: String, bounds: ScreenBounds): String {
+        return "${base}_${orientationKey(bounds)}"
+    }
+
+    private fun readSavedBounds(
+        bounds: ScreenBounds,
+        allowLegacyFallback: Boolean
+    ): SavedOverlayBounds? {
+        val xKey = orientationPrefKey("desktopLyricsX", bounds)
+        val yKey = orientationPrefKey("desktopLyricsY", bounds)
+        val widthKey = orientationPrefKey("desktopLyricsWidth", bounds)
+        val heightKey = orientationPrefKey("desktopLyricsHeight", bounds)
+        if (prefs.contains(xKey) && prefs.contains(yKey) &&
+            prefs.contains(widthKey) && prefs.contains(heightKey)
+        ) {
+            return SavedOverlayBounds(
+                x = prefs.getInt(xKey, 0),
+                y = prefs.getInt(yKey, 0),
+                width = prefs.getInt(widthKey, 320.dp()),
+                height = prefs.getInt(heightKey, minOverlayHeight())
+            )
+        }
+        if (!allowLegacyFallback) return null
+        if (!prefs.contains("desktopLyricsX") &&
+            !prefs.contains("desktopLyricsY") &&
+            !prefs.contains("desktopLyricsWidth") &&
+            !prefs.contains("desktopLyricsHeight")
+        ) {
+            return null
+        }
+        return SavedOverlayBounds(
+            x = prefs.getInt("desktopLyricsX", 24.dp()),
+            y = prefs.getInt("desktopLyricsY", 120.dp()),
+            width = prefs.getInt("desktopLyricsWidth", 320.dp()),
+            height = prefs.getInt("desktopLyricsHeight", minOverlayHeight())
+        )
+    }
+
+    private fun applySavedBounds(
+        params: WindowManager.LayoutParams,
+        saved: SavedOverlayBounds
+    ) {
+        params.x = saved.x
+        params.y = saved.y
+        params.width = saved.width
+        params.height = saved.height
+    }
+
+    private fun mapBoundsToDisplay(
+        params: WindowManager.LayoutParams,
+        previous: ScreenBounds,
+        next: ScreenBounds
+    ) {
+        val centerXRatio = (params.x + params.width / 2.0) / previous.width.toDouble()
+        val centerYRatio = (params.y + params.height / 2.0) / previous.height.toDouble()
+        params.x = (centerXRatio * next.width - params.width / 2.0).roundToInt()
+        params.y = (centerYRatio * next.height - params.height / 2.0).roundToInt()
+    }
+
     private fun createLayoutParams(): WindowManager.LayoutParams {
         val bounds = screenBounds()
         lastScreenBounds = bounds
@@ -302,17 +386,18 @@ class DesktopLyricsOverlayController(private val context: Context) {
         val minWidth = minOverlayWidth()
         val minHeight = minOverlayHeight()
         lastMinOverlayHeight = minHeight
-        val width = prefs.getInt("desktopLyricsWidth", defaultWidth)
+        val saved = readSavedBounds(bounds, allowLegacyFallback = true)
+        val width = (saved?.width ?: defaultWidth)
             .coerceIn(minWidth, (bounds.width - 24.dp()).coerceAtLeast(minWidth))
-        val height = prefs.getInt("desktopLyricsHeight", defaultHeight)
+        val height = (saved?.height ?: defaultHeight)
             .coerceIn(minHeight, (bounds.height - 32.dp()).coerceAtLeast(minHeight))
-        val savedX = prefs.getInt("desktopLyricsX", 24.dp())
+        val savedX = saved?.x ?: 24.dp()
         val x = if (centerLineLocked) {
             centeredX(width, bounds)
         } else {
             savedX.coerceIn(0, (bounds.width - width).coerceAtLeast(0))
         }
-        val y = prefs.getInt("desktopLyricsY", 120.dp())
+        val y = (saved?.y ?: 120.dp())
             .coerceIn(0, (bounds.height - height).coerceAtLeast(0))
         return WindowManager.LayoutParams(
             width,
@@ -752,7 +837,18 @@ class DesktopLyricsOverlayController(private val context: Context) {
     }
 
     private fun saveBounds(params: WindowManager.LayoutParams) {
+        saveBounds(params, lastScreenBounds ?: screenBounds())
+    }
+
+    private fun saveBounds(
+        params: WindowManager.LayoutParams,
+        bounds: ScreenBounds
+    ) {
         prefs.edit()
+            .putInt(orientationPrefKey("desktopLyricsX", bounds), params.x)
+            .putInt(orientationPrefKey("desktopLyricsY", bounds), params.y)
+            .putInt(orientationPrefKey("desktopLyricsWidth", bounds), params.width)
+            .putInt(orientationPrefKey("desktopLyricsHeight", bounds), params.height)
             .putInt("desktopLyricsX", params.x)
             .putInt("desktopLyricsY", params.y)
             .putInt("desktopLyricsWidth", params.width)

@@ -8,6 +8,31 @@ All notable public changes to EmoC will be documented in this file.
 
 Public versions should match the version in `pubspec.yaml`.
 
+## [1.0.4] - 2026-07-14
+
+### 优化 / Improved
+
+- 增强后台播放保护：歌曲结束后保持前台媒体服务和系统播放状态，并为自动续播增加原生事件重试与超时恢复。
+  Strengthened background playback by keeping the foreground media service active between tracks and adding native retry and timeout recovery for automatic advancement.
+- 为播放地址请求增加真正的全局超时；网络异常或遇到当前账号不可播放的歌曲时，可继续尝试播放列表中的下一首。
+  Added a real global timeout for playback URL requests so network failures or unavailable tracks can advance to the next queue item.
+- 优化歌单歌曲与封面缓存、长列表分批展示和播放列表状态恢复，减少首次加载与滚动卡顿。
+  Improved playlist-song and artwork caching, incremental long-list rendering, and queue restoration to reduce startup and scrolling stalls.
+
+### 修复 / Fixed
+
+- 修复新建、删除歌单以及添加、移除、喜欢歌曲等操作可能因旧网页调用路径失效的问题，改用当前接口契约。
+  Fixed playlist creation/deletion and song add/remove/like operations that could fail through obsolete web paths by using the current API contracts.
+- 修复歌曲自然播放结束、VIP 连续跳过或后台网络请求卡住时，自动播放可能中断的问题。
+  Fixed automatic playback stopping after natural completion, chained unavailable-track skips, or stalled background requests.
+- 修复部分播放状态、封面与系统媒体控件在应用进入后台后不能及时同步的问题。
+  Fixed several playback-state, artwork, and system-media synchronization issues while the app is backgrounded.
+
+### 验证 / Verification
+
+- Dart 静态分析通过，13 项 Flutter 自动化测试全部通过，Android Release APK 构建成功。
+  Dart analysis passed, all 13 Flutter tests passed, and the Android release APK built successfully.
+
 ## [1.0.3] - 2026-07-13
 
 ### 优化 / Improved

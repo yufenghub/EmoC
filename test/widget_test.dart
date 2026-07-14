@@ -6,6 +6,38 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:emoc/main.dart';
 
 void main() {
+  test('playlist mutations use the current official API contracts', () async {
+    final requests =
+        <({String path, Map<String, dynamic> data, bool useGet})>[];
+    final client = MusicMutationApiClient(
+      plainRequestOverride: (path, data, {required useGet}) async {
+        requests.add((path: path, data: data, useGet: useGet));
+        if (path == '/api/playlist/create') {
+          return {
+            'code': 200,
+            'playlist': {'id': 987654321, 'name': '测试歌单'},
+          };
+        }
+        return {'code': 200};
+      },
+    );
+
+    final created = await client.createPlaylist('测试歌单');
+    await client.deletePlaylist('987654321');
+
+    expect(created.id, '987654321');
+    expect(created.name, '测试歌单');
+    expect(requests, hasLength(2));
+    expect(requests.first.path, '/api/playlist/create');
+    expect(requests.first.useGet, isFalse);
+    expect(requests.first.data['name'], '测试歌单');
+    expect(requests.first.data['privacy'], '0');
+    expect(requests.first.data['type'], 'NORMAL');
+    expect(requests.last.path, '/api/playlist/delete');
+    expect(requests.last.useGet, isTrue);
+    expect(requests.last.data['pid'], 987654321);
+  });
+
   testWidgets('renders the main shell before login probing', (tester) async {
     final model = AppModel()..showSongCovers = false;
     addTearDown(model.dispose);

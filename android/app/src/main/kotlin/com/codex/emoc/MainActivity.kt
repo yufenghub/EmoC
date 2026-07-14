@@ -502,6 +502,7 @@ class MainActivity : FlutterActivity() {
             exoPlayer.volume = playerVolume
             exoPlayer.setWakeMode(C.WAKE_MODE_NETWORK)
             exoPlayer.playbackParameters = PlaybackParameters(1.0f)
+            var endedNotified = false
             exoPlayer.addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(playbackState: Int) {
                     if (generation != playGeneration) return
@@ -517,6 +518,13 @@ class MainActivity : FlutterActivity() {
                     }
                     if (playbackState == Player.STATE_ENDED) {
                         updateSystemMedia()
+                        if (!endedNotified) {
+                            endedNotified = true
+                            notifyTrackEndedWithRetries(
+                                generation = generation,
+                                songId = currentTrack.songId
+                            )
+                        }
                     }
                 }
 
@@ -613,6 +621,27 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun notifyTrackEndedWithRetries(generation: Int, songId: String) {
+        // A stopped Flutter UI can take a moment to resume its isolate. Keep the
+        // foreground service alive and retry the hand-off until a new player
+        // generation starts. Dart de-duplicates these events.
+        val delays = longArrayOf(0L, 1_500L, 4_000L, 8_000L, 14_000L)
+        delays.forEach { delayMs ->
+            Handler(Looper.getMainLooper()).postDelayed({
+                val current = player ?: return@postDelayed
+                if (generation != playGeneration ||
+                    current.playbackState != Player.STATE_ENDED ||
+                    currentTrack.songId != songId ||
+                    userPaused
+                ) {
+                    return@postDelayed
+                }
+                PlaybackKeepAliveService.start(this, currentTrack)
+                notifyFlutter("ended", mapOf("songId" to songId))
+            }, delayMs)
+        }
+    }
+
     private fun notifySystemThemeChanged() {
         Handler(Looper.getMainLooper()).post {
             nativeChannel?.invokeMethod(
@@ -632,24 +661,24 @@ class MainActivity : FlutterActivity() {
         val duration = current.duration.takeIf { it != C.TIME_UNSET && it > 0L } ?: 0L
         val position = current.currentPosition.coerceAtLeast(0L)
         val ended = current.playbackState == Player.STATE_ENDED
-        val playing = current.playWhenReady && !userPaused && !ended
+        // Keep the media session and foreground service alive while Flutter
+        // resolves the next playable item (including VIP skip chains).
+        val waitingForNext = ended && !userPaused
+        val playing = !userPaused && (current.playWhenReady || waitingForNext)
         systemMediaController?.update(
             metadata = currentTrack,
             playing = playing,
             currentMs = if (playerPrepared) position else 0L,
             durationMs = if (playerPrepared) duration else 0L
         )
-        if (playing) {
+        if (playing || waitingForNext) {
             PlaybackKeepAliveService.start(this, currentTrack)
-        } else if (ended) {
-            PlaybackKeepAliveService.stop(this)
         }
     }
 
     private fun keepPlaybackServiceAliveIfNeeded() {
         val current = player ?: return
-        val ended = current.playbackState == Player.STATE_ENDED
-        if (current.playWhenReady && !userPaused && !ended) {
+        if (current.playWhenReady && !userPaused) {
             PlaybackKeepAliveService.start(this, currentTrack)
             updateSystemMedia()
         }
@@ -886,8 +915,7 @@ class MainActivity : FlutterActivity() {
 
     private fun shouldKeepPlaybackAliveOnDestroy(): Boolean {
         val current = player ?: return false
-        val ended = current.playbackState == Player.STATE_ENDED
-        return current.playWhenReady && !userPaused && !ended
+        return current.playWhenReady && !userPaused
     }
 
     override fun onDestroy() {
