@@ -791,6 +791,8 @@ class CoverImage extends StatefulWidget {
     required this.url,
     this.identity = '',
     this.fallbackIcon = Icons.music_note,
+    this.preferredSize = 360,
+    this.decodeSize = 192,
     this.onAllCandidatesFailed,
     super.key,
   });
@@ -798,6 +800,8 @@ class CoverImage extends StatefulWidget {
   final String url;
   final String identity;
   final IconData fallbackIcon;
+  final int preferredSize;
+  final int decodeSize;
   final VoidCallback? onAllCandidatesFailed;
 
   @override
@@ -834,7 +838,10 @@ class _CoverImageState extends State<CoverImage> {
   @override
   void didUpdateWidget(covariant CoverImage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.url == widget.url && oldWidget.identity == widget.identity) {
+    if (oldWidget.url == widget.url &&
+        oldWidget.identity == widget.identity &&
+        oldWidget.preferredSize == widget.preferredSize &&
+        oldWidget.decodeSize == widget.decodeSize) {
       return;
     }
     _resetLoader(keepPrevious: true);
@@ -844,7 +851,10 @@ class _CoverImageState extends State<CoverImage> {
     _staleHoldTimer?.cancel();
     _externalRetryTimer?.cancel();
     _loadGeneration += 1;
-    _candidates = _coverImageCandidates(widget.url);
+    _candidates = _coverImageCandidates(
+      widget.url,
+      preferredSize: widget.preferredSize,
+    );
     _decodeFailures.clear();
     if (!keepPrevious) {
       _bytes = null;
@@ -999,9 +1009,11 @@ class _CoverImageState extends State<CoverImage> {
         fit: BoxFit.cover,
         width: double.infinity,
         height: double.infinity,
-        cacheWidth: 192,
-        cacheHeight: 192,
-        filterQuality: FilterQuality.medium,
+        cacheWidth: widget.decodeSize,
+        cacheHeight: widget.decodeSize,
+        filterQuality: widget.decodeSize > 256
+            ? FilterQuality.high
+            : FilterQuality.medium,
         gaplessPlayback: true,
         errorBuilder: (_, _, _) {
           _handleDecodeFailure();
@@ -1012,7 +1024,7 @@ class _CoverImageState extends State<CoverImage> {
   }
 }
 
-List<String> _coverImageCandidates(String rawUrl) {
+List<String> _coverImageCandidates(String rawUrl, {int preferredSize = 360}) {
   var normalized = _absoluteMusicUrl(rawUrl).trim();
   if (normalized.startsWith('//')) normalized = 'https:$normalized';
   if (!normalized.startsWith('http')) return const [];
@@ -1024,6 +1036,7 @@ List<String> _coverImageCandidates(String rawUrl) {
         : value;
     final base = https.split('?').first;
     candidates
+      ..add('$base?param=${preferredSize}y$preferredSize')
       ..add('$base?param=360y360')
       ..add('$base?param=180y180')
       ..add(https)

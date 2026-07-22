@@ -31,6 +31,8 @@ part 'src/home_page.dart';
 part 'src/library_page.dart';
 part 'src/mine_page.dart';
 part 'src/song_detail_page.dart';
+part 'src/lyrics_player_view.dart';
+part 'src/apple_music_player_view.dart';
 part 'src/playlist_detail_page.dart';
 part 'src/common_widgets.dart';
 part 'src/utils.dart';

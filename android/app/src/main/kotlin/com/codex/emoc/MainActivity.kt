@@ -70,10 +70,16 @@ class MainActivity : FlutterActivity() {
     private var audioFocusRequest: AudioFocusRequest?
         get() = sharedAudioFocusRequest
         set(value) { sharedAudioFocusRequest = value }
-
     private var playerPrepared: Boolean
         get() = sharedPlayerPrepared
         set(value) { sharedPlayerPrepared = value }
+    private var audioSpectrumDecoder: PlaybackSpectrumDecoder?
+        get() = sharedAudioSpectrumDecoder
+        set(value) { sharedAudioSpectrumDecoder = value }
+
+    private var currentPlaybackUrl: String
+        get() = sharedCurrentPlaybackUrl
+        set(value) { sharedCurrentPlaybackUrl = value }
 
     private var playGeneration: Int
         get() = sharedPlayGeneration
@@ -152,6 +158,7 @@ class MainActivity : FlutterActivity() {
             override fun onNext() = handleSystemMediaAction(SystemMediaController.ACTION_NEXT)
             override fun onSeekTo(positionMs: Long) {
                 player?.seekTo(positionMs.coerceAtLeast(0L))
+                audioSpectrumDecoder?.seekTo(positionMs)
                 updateSystemMedia()
                 notifyFlutter("seek", mapOf("positionMs" to positionMs.coerceAtLeast(0L)))
             }
@@ -227,10 +234,15 @@ class MainActivity : FlutterActivity() {
                             result.error("AUDIO_FOCUS_DENIED", "音频焦点被其他应用占用", null)
                             return@setMethodCallHandler
                         }
+                        val current = player
+                        if (current == null) {
+                            result.error("NO_ACTIVE_PLAYER", "原生播放器尚未建立", null)
+                            return@setMethodCallHandler
+                        }
                         userPaused = false
                         pausedByAudioFocusLoss = false
-                        player?.playWhenReady = true
-                        player?.play()
+                        current.playWhenReady = true
+                        current.play()
                         PlaybackKeepAliveService.start(this, currentTrack)
                         updateSystemMedia()
                         result.success(null)
@@ -238,6 +250,7 @@ class MainActivity : FlutterActivity() {
                     "seekTo" -> {
                         val positionMs = call.argument<Int>("positionMs") ?: 0
                         player?.seekTo(positionMs.coerceAtLeast(0).toLong())
+                        audioSpectrumDecoder?.seekTo(positionMs.toLong())
                         updateSystemMedia()
                         result.success(null)
                     }
@@ -245,6 +258,16 @@ class MainActivity : FlutterActivity() {
                         playerVolume = (call.argument<Double>("volume") ?: 0.7).toFloat()
                             .coerceIn(0f, 1f)
                         player?.volume = playerVolume
+                        result.success(null)
+                    }
+                    "setAudioSpectrumEnabled" -> {
+                        sharedAudioSpectrumEnabled =
+                            call.argument<Boolean>("value") ?: false
+                        if (sharedAudioSpectrumEnabled) {
+                            startSpectrumDecoderIfNeeded()
+                        } else {
+                            stopSpectrumDecoder()
+                        }
                         result.success(null)
                     }
                     "setAllowMixedAudio" -> {
@@ -294,6 +317,8 @@ class MainActivity : FlutterActivity() {
                             call.argument<Boolean>("centerLineLocked") ?: false
                         val autoHideInForeground =
                             call.argument<Boolean>("autoHideInForeground") ?: false
+                        val autoHideWhenPaused =
+                            call.argument<Boolean>("autoHideWhenPaused") ?: false
                         val followDynamicColor =
                             call.argument<Boolean>("followDynamicColor") ?: false
                         val backgroundColor = call.argument<Number>("backgroundColor")
@@ -310,6 +335,7 @@ class MainActivity : FlutterActivity() {
                             multiLine = multiLine,
                             centerLineLocked = centerLineLocked,
                             autoHideInForeground = autoHideInForeground,
+                            autoHideWhenPaused = autoHideWhenPaused,
                             followDynamicColor = followDynamicColor,
                             backgroundColor = backgroundColor,
                             textColor = textColor
@@ -320,7 +346,8 @@ class MainActivity : FlutterActivity() {
                         desktopLyricsOverlay?.updateText(
                             text = call.argument<String>("text").orEmpty(),
                             title = call.argument<String>("title").orEmpty(),
-                            artist = call.argument<String>("artist").orEmpty()
+                            artist = call.argument<String>("artist").orEmpty(),
+                            playing = call.argument<Boolean>("playing") ?: false
                         )
                         result.success(null)
                     }
@@ -441,7 +468,11 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun playUrl(url: String, metadata: TrackMetadata, result: MethodChannel.Result) {
+    private fun playUrl(
+        url: String,
+        metadata: TrackMetadata,
+        result: MethodChannel.Result?
+    ) {
         ensureNotificationPermission()
         val generation = playGeneration + 1
         playGeneration = generation
@@ -461,6 +492,7 @@ class MainActivity : FlutterActivity() {
         }
         releasePlayer(clearSystemMedia = !keepPreviousSystemMedia)
         currentTrack = metadata
+        currentPlaybackUrl = url
         if (!keepPreviousSystemMedia) {
             PlaybackKeepAliveService.start(this, currentTrack)
         }
@@ -469,13 +501,13 @@ class MainActivity : FlutterActivity() {
         fun successOnce() {
             if (!replied) {
                 replied = true
-                result.success(null)
+                result?.success(null)
             }
         }
         fun errorOnce(code: String, message: String) {
             if (!replied) {
                 replied = true
-                result.error(code, message, null)
+                result?.error(code, message, null)
             }
         }
 
@@ -487,7 +519,7 @@ class MainActivity : FlutterActivity() {
                 return
             }
             val renderersFactory = DefaultRenderersFactory(applicationContext)
-                .setEnableDecoderFallback(true)
+            renderersFactory.setEnableDecoderFallback(true)
             val exoPlayer = ExoPlayer.Builder(applicationContext, renderersFactory).build()
             player = exoPlayer
             playerPrepared = false
@@ -514,6 +546,7 @@ class MainActivity : FlutterActivity() {
                         }
                         PlaybackKeepAliveService.start(this@MainActivity, currentTrack)
                         updateSystemMedia()
+                        startSpectrumDecoderIfNeeded()
                         successOnce()
                     }
                     if (playbackState == Player.STATE_ENDED) {
@@ -529,18 +562,21 @@ class MainActivity : FlutterActivity() {
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
-                    if (generation != playGeneration) {
-                        successOnce()
-                        return
-                    }
+                    if (generation != playGeneration) return
                     playerPrepared = false
-                    releasePlayer()
-                    errorOnce("PLAYER_ERROR", "播放器错误：${error.errorCodeName}")
+                    val errorResult = if (replied) null else result
+                    releasePlayer(clearSystemMedia = false)
+                    errorResult?.error(
+                        "PLAYER_ERROR",
+                        "播放器错误：${error.errorCodeName}",
+                        null
+                    )
                 }
 
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     if (generation == playGeneration && isPlaying) {
                         exoPlayer.playbackParameters = PlaybackParameters(1.0f)
+                        successOnce()
                     }
                     if (generation == playGeneration) {
                         updateSystemMedia()
@@ -560,9 +596,69 @@ class MainActivity : FlutterActivity() {
             exoPlayer.prepare()
             exoPlayer.playWhenReady = true
         } catch (error: Exception) {
-            releasePlayer()
-            errorOnce("PLAYER_SOURCE_ERROR", "播放地址加载失败：${error.message}")
+            val errorResult = if (replied) null else result
+            releasePlayer(clearSystemMedia = false)
+            errorResult?.error(
+                "PLAYER_SOURCE_ERROR",
+                "播放地址加载失败：${error.message}",
+                null
+            )
         }
+    }
+
+    private fun startSpectrumDecoderIfNeeded() {
+        if (!sharedAudioSpectrumEnabled || !playerPrepared) return
+        val current = player ?: return
+        val url = currentPlaybackUrl
+        if (url.isBlank()) return
+        val existing = audioSpectrumDecoder
+        if (existing?.sourceUrl == url) {
+            ensureSpectrumClockRunning()
+            return
+        }
+
+        stopSpectrumDecoder()
+        val generation = playGeneration
+        lateinit var decoder: PlaybackSpectrumDecoder
+        decoder = PlaybackSpectrumDecoder(
+            sourceUrl = url,
+            headers = requestHeaders() + ("User-Agent" to USER_AGENT)
+        ) spectrum@{ frame ->
+            if (
+                generation != playGeneration ||
+                audioSpectrumDecoder !== decoder ||
+                !sharedAudioSpectrumEnabled
+            ) {
+                return@spectrum
+            }
+            mainThreadHandler.post {
+                activeActivity?.get()?.notifyFlutter(
+                    "audioSpectrum",
+                    mapOf(
+                        "bands" to frame.bands.map { it.toDouble() },
+                        "rms" to frame.rms.toDouble(),
+                        "centroid" to frame.centroid.toDouble()
+                    )
+                )
+            }
+        }
+        audioSpectrumDecoder = decoder
+        decoder.start(
+            initialPositionMs = current.currentPosition.coerceAtLeast(0L),
+            playing = current.isPlaying && !userPaused
+        )
+        ensureSpectrumClockRunning()
+    }
+
+    private fun stopSpectrumDecoder() {
+        audioSpectrumDecoder?.stop()
+        audioSpectrumDecoder = null
+    }
+
+    private fun ensureSpectrumClockRunning() {
+        if (sharedSpectrumClockScheduled) return
+        sharedSpectrumClockScheduled = true
+        mainThreadHandler.post(spectrumClockRunnable)
     }
 
     private fun restorePausedMedia(metadata: TrackMetadata, durationMs: Long) {
@@ -823,8 +919,10 @@ class MainActivity : FlutterActivity() {
     private fun releasePlayer(clearSystemMedia: Boolean = true) {
         playerPrepared = false
         pausedByAudioFocusLoss = false
+        stopSpectrumDecoder()
         player?.release()
         player = null
+        currentPlaybackUrl = ""
         if (clearSystemMedia) {
             systemMediaController?.cancel()
             PlaybackKeepAliveService.stop(this)
@@ -970,9 +1068,32 @@ class MainActivity : FlutterActivity() {
         private var sharedPausedByAudioFocusLoss = false
         private var sharedAllowMixedAudio = false
         private var sharedAudioFocusRequest: AudioFocusRequest? = null
-
         @Volatile
         private var sharedPlayerPrepared = false
+        @Volatile
+        private var sharedAudioSpectrumDecoder: PlaybackSpectrumDecoder? = null
+        private var sharedCurrentPlaybackUrl = ""
+        @Volatile
+        private var sharedAudioSpectrumEnabled = false
+        private val mainThreadHandler = Handler(Looper.getMainLooper())
+        private var sharedSpectrumClockScheduled = false
+        private val spectrumClockRunnable = object : Runnable {
+            override fun run() {
+                val decoder = sharedAudioSpectrumDecoder
+                val current = sharedPlayer
+                if (decoder == null || current == null || !sharedAudioSpectrumEnabled) {
+                    sharedSpectrumClockScheduled = false
+                    return
+                }
+                runCatching {
+                    decoder.updatePlaybackState(
+                        positionMs = current.currentPosition.coerceAtLeast(0L),
+                        playing = current.isPlaying && !sharedUserPaused
+                    )
+                }
+                mainThreadHandler.postDelayed(this, 35L)
+            }
+        }
 
         @Volatile
         private var sharedPlayGeneration = 0

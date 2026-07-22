@@ -45,7 +45,18 @@ class SystemMediaController(
         context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     private val mainHandler = Handler(Looper.getMainLooper())
     private val coverExecutor = Executors.newSingleThreadExecutor()
+    private val sessionActivityIntent: PendingIntent by lazy(LazyThreadSafetyMode.NONE) {
+        contentIntent()
+    }
     private val session = MediaSessionCompat(context, SESSION_TAG).apply {
+        setFlags(
+            MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS or
+                MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS
+        )
+        // Deliberately do not register a sessionActivity. MIUI may resolve it
+        // while handling a transport command and briefly foreground Flutter.
+        // The notification body still owns its explicit open-player intent;
+        // transport controls remain pure MediaSession/Broadcast actions.
         setCallback(object : MediaSessionCompat.Callback() {
             override fun onPlay() = callbacks.onPlay()
             override fun onPause() = callbacks.onPause()
@@ -199,7 +210,7 @@ class SystemMediaController(
             .setShowWhen(false)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setOngoing(playing)
-            .setContentIntent(contentIntent())
+            .setContentIntent(sessionActivityIntent)
             .addAction(
                 android.R.drawable.ic_media_previous,
                 "上一首",
@@ -401,10 +412,18 @@ class SystemMediaController(
 
     private fun contentIntent(): PendingIntent {
         val intent = Intent(context, MainActivity::class.java)
-            .setAction(Intent.ACTION_MAIN)
-            .addCategory(Intent.CATEGORY_LAUNCHER)
-            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        return PendingIntent.getActivity(context, 0, intent, pendingIntentFlags())
+            .setAction(ACTION_OPEN_PLAYER)
+            .addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+            )
+        return PendingIntent.getActivity(
+            context,
+            OPEN_PLAYER_REQUEST_CODE,
+            intent,
+            pendingIntentFlags()
+        )
     }
 
     private fun actionIntent(action: String): PendingIntent {
@@ -436,9 +455,11 @@ class SystemMediaController(
         const val ACTION_PLAY_PAUSE = "com.codex.emoc.action.PLAY_PAUSE"
         const val ACTION_PREVIOUS = "com.codex.emoc.action.PREVIOUS"
         const val ACTION_NEXT = "com.codex.emoc.action.NEXT"
+        const val ACTION_OPEN_PLAYER = "com.codex.emoc.action.OPEN_PLAYER"
 
         private const val CHANNEL_ID = "emoc_media"
         private const val NOTIFICATION_ID = 16301
+        private const val OPEN_PLAYER_REQUEST_CODE = 16302
         private const val SESSION_TAG = "EmoCPlayer"
     }
 }

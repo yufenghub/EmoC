@@ -140,6 +140,7 @@ void _openDesktopLyricsSheet(BuildContext context, AppModel model) {
   var multiLine = model.desktopLyricsMultiLine;
   var centerLineLocked = model.desktopLyricsCenterLineLocked;
   var autoHideInForeground = model.desktopLyricsAutoHideInForeground;
+  var autoHideWhenPaused = model.desktopLyricsAutoHideWhenPaused;
   var followDynamicColor = model.desktopLyricsFollowDynamicColor;
   var backgroundColor = model.desktopLyricsBackgroundColor;
   var textColor = model.desktopLyricsTextColor;
@@ -159,6 +160,7 @@ void _openDesktopLyricsSheet(BuildContext context, AppModel model) {
             bool? nextMultiLine,
             bool? nextCenterLineLocked,
             bool? nextAutoHideInForeground,
+            bool? nextAutoHideWhenPaused,
             bool? nextFollowDynamicColor,
             Color? nextBackgroundColor,
             Color? nextTextColor,
@@ -172,6 +174,7 @@ void _openDesktopLyricsSheet(BuildContext context, AppModel model) {
               centerLineLocked = nextCenterLineLocked ?? centerLineLocked;
               autoHideInForeground =
                   nextAutoHideInForeground ?? autoHideInForeground;
+              autoHideWhenPaused = nextAutoHideWhenPaused ?? autoHideWhenPaused;
               followDynamicColor = nextFollowDynamicColor ?? followDynamicColor;
               backgroundColor = nextBackgroundColor ?? backgroundColor;
               textColor = nextTextColor ?? textColor;
@@ -185,6 +188,7 @@ void _openDesktopLyricsSheet(BuildContext context, AppModel model) {
                 multiLine: multiLine,
                 centerLineLocked: centerLineLocked,
                 autoHideInForeground: autoHideInForeground,
+                autoHideWhenPaused: autoHideWhenPaused,
                 followDynamicColor: followDynamicColor,
                 backgroundColor: backgroundColor,
                 textColor: textColor,
@@ -320,6 +324,12 @@ void _openDesktopLyricsSheet(BuildContext context, AppModel model) {
                     value: autoHideInForeground,
                     onChanged: (value) =>
                         update(nextAutoHideInForeground: value),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('暂停播放时自动隐藏'),
+                    value: autoHideWhenPaused,
+                    onChanged: (value) => update(nextAutoHideWhenPaused: value),
                   ),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,

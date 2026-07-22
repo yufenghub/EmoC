@@ -369,6 +369,458 @@ void main() {
       expect(find.byType(PlayerBar), findsOneWidget);
     });
   }
+
+  for (final layout in const [
+    (
+      size: Size(390, 844),
+      label: 'phone portrait',
+      widgetKey: 'portrait-player',
+      portrait: true,
+    ),
+    (
+      size: Size(844, 390),
+      label: 'phone landscape',
+      widgetKey: 'landscape-player',
+      portrait: false,
+    ),
+    (
+      size: Size(800, 1200),
+      label: 'tablet portrait',
+      widgetKey: 'portrait-player',
+      portrait: true,
+    ),
+    (
+      size: Size(1280, 800),
+      label: 'tablet landscape',
+      widgetKey: 'landscape-player',
+      portrait: false,
+    ),
+  ]) {
+    testWidgets('expanded lyrics player adapts to ${layout.label}', (
+      tester,
+    ) async {
+      tester.view.physicalSize = layout.size;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final model = AppModel()..showSongCovers = false;
+      addTearDown(model.dispose);
+      const song = MirrorItem(
+        domId: 'song_1',
+        kind: 'song',
+        title: '布局测试歌曲',
+        subtitle: '测试歌手 · 测试专辑',
+        imageUrl: '',
+        href: 'https://music.163.com/#/song?id=1',
+      );
+      const player = PlayerSnapshot(
+        visible: true,
+        songId: '1',
+        title: '布局测试歌曲',
+        artist: '测试歌手',
+        source: '测试专辑',
+        coverUrl: '',
+        playing: false,
+        currentSeconds: 12,
+        durationSeconds: 180,
+        currentMilliseconds: 12000,
+        durationMilliseconds: 180000,
+        volume: 0.7,
+        mode: 'loop',
+      );
+      const lyrics = [
+        LyricLine(time: 0, text: '第一句歌词'),
+        LyricLine(
+          time: 10,
+          text:
+              '当前播放歌词很长也应该保持完整布局\nThe active translated lyric remains readable',
+        ),
+        LyricLine(
+          time: 20,
+          text: '下一句歌词同样可能很长\nThe next translated line can also wrap',
+        ),
+      ];
+
+      await tester.pumpWidget(
+        AppScope(
+          model: model,
+          child: MaterialApp(
+            home: Scaffold(
+              body: LyricsPlayerView(
+                model: model,
+                player: player,
+                song: song,
+                lyrics: lyrics,
+                lyricsLoading: false,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 350));
+
+      expect(find.byKey(ValueKey(layout.widgetKey)), findsOneWidget);
+      expect(find.text('布局测试歌曲'), findsOneWidget);
+      expect(
+        find.text(
+          '当前播放歌词很长也应该保持完整布局\nThe active translated lyric remains readable',
+        ),
+        findsOneWidget,
+      );
+      if (layout.portrait) {
+        final recordCenter = tester.getCenter(
+          find.byKey(const ValueKey('vinyl-record-1')),
+        );
+        expect(recordCenter.dx, closeTo(layout.size.width / 2, 1.5));
+        final controlsBottom = tester.getBottomRight(
+          find.byKey(const ValueKey('vinyl-player-controls')),
+        );
+        expect(controlsBottom.dy, greaterThan(layout.size.height * 0.78));
+      } else {
+        final recordCenter = tester.getCenter(
+          find.byKey(const ValueKey('vinyl-record-1')),
+        );
+        expect(recordCenter.dy, closeTo(layout.size.height / 2, 2));
+      }
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  for (final layout in const [
+    (
+      size: Size(390, 844),
+      label: 'phone portrait',
+      widgetKey: 'apple-portrait-player',
+      landscape: false,
+    ),
+    (
+      size: Size(844, 390),
+      label: 'phone landscape',
+      widgetKey: 'apple-landscape-player',
+      landscape: true,
+    ),
+    (
+      size: Size(800, 1200),
+      label: 'tablet portrait',
+      widgetKey: 'apple-portrait-player',
+      landscape: false,
+    ),
+    (
+      size: Size(1280, 800),
+      label: 'tablet landscape',
+      widgetKey: 'apple-landscape-player',
+      landscape: true,
+    ),
+  ]) {
+    testWidgets('cover player adapts to ${layout.label}', (tester) async {
+      tester.view.physicalSize = layout.size;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final model = AppModel()..showSongCovers = false;
+      addTearDown(model.dispose);
+      const song = MirrorItem(
+        domId: 'song_2',
+        kind: 'song',
+        title: '封面播放器布局测试歌曲',
+        subtitle: '测试歌手 · 测试专辑',
+        imageUrl: '',
+        href: 'https://music.163.com/#/song?id=2',
+      );
+      const player = PlayerSnapshot(
+        visible: true,
+        songId: '2',
+        title: '封面播放器布局测试歌曲',
+        artist: '测试歌手',
+        source: '测试专辑',
+        coverUrl: '',
+        playing: false,
+        currentSeconds: 48,
+        durationSeconds: 240,
+        currentMilliseconds: 48000,
+        durationMilliseconds: 240000,
+        volume: 0.65,
+        mode: 'loop',
+      );
+
+      await tester.pumpWidget(
+        AppScope(
+          model: model,
+          child: MaterialApp(
+            home: Scaffold(
+              body: AppleMusicPlayerView(
+                model: model,
+                player: player,
+                song: song,
+                lyrics: const [
+                  LyricLine(time: 0, text: '第一句'),
+                  LyricLine(time: 40, text: '正在播放的歌词'),
+                  LyricLine(time: 80, text: '接下来播放的歌词'),
+                ],
+                lyricsLoading: false,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 350));
+
+      expect(find.byKey(ValueKey(layout.widgetKey)), findsOneWidget);
+      expect(find.text('封面播放器布局测试歌曲'), findsOneWidget);
+      expect(find.text('正在播放的歌词'), findsOneWidget);
+      expect(find.text('接下来播放的歌词'), findsOneWidget);
+      if (layout.landscape) {
+        final artworkBottom = tester
+            .getBottomRight(find.byKey(const ValueKey('apple-artwork-2')))
+            .dy;
+        final controlsBottom = tester
+            .getBottomRight(
+              find.byKey(const ValueKey('apple-playback-panel-compact')),
+            )
+            .dy;
+        expect(controlsBottom, lessThanOrEqualTo(artworkBottom + 2));
+        expect(controlsBottom, greaterThan(artworkBottom - 24));
+      }
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('lyrics page owns the player bar and hides it with chrome', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final model = _SongDetailLayoutModel();
+    addTearDown(model.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SongDetailPage(model: model, song: model.testSong),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 350));
+
+    expect(
+      find.byKey(const ValueKey('integrated-lyrics-player-bar')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('chrome-visible')), findsOneWidget);
+    final activeLyricBeforeFullscreen = tester.getCenter(find.text('当前歌词')).dy;
+    final headerFinder = find.byKey(
+      const ValueKey('lyrics-content-header-9001|详情页布局歌曲'),
+    );
+    final headerBeforeFullscreen = tester.getCenter(headerFinder).dy;
+    final lyricViewportBeforeFullscreen = tester.getSize(
+      find.byType(ScrollingLyrics),
+    );
+
+    await tester.tapAt(const Offset(195, 300));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 350));
+
+    expect(
+      find.byKey(const ValueKey('integrated-lyrics-player-bar')),
+      findsNothing,
+    );
+    expect(find.byKey(const ValueKey('chrome-hidden')), findsOneWidget);
+    final activeLyricAfterFullscreen = tester.getCenter(find.text('当前歌词')).dy;
+    final headerAfterFullscreen = tester.getCenter(headerFinder).dy;
+    final headerTopAfterFullscreen = tester.getTopLeft(headerFinder).dy;
+    final lyricViewportAfterFullscreen = tester.getSize(
+      find.byType(ScrollingLyrics),
+    );
+    expect(
+      (activeLyricAfterFullscreen - activeLyricBeforeFullscreen).abs(),
+      lessThan(1),
+    );
+    expect(headerAfterFullscreen, lessThan(headerBeforeFullscreen - 20));
+    expect(headerTopAfterFullscreen, closeTo(0, 1));
+    expect(
+      lyricViewportAfterFullscreen.height,
+      greaterThan(lyricViewportBeforeFullscreen.height + 100),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('landscape song detail hides page titles across player styles', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(844, 390);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final model = _SongDetailLayoutModel();
+    addTearDown(model.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SongDetailPage(model: model, song: model.testSong),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 350));
+
+    expect(find.text('歌词'), findsNothing);
+    expect(find.byKey(const ValueKey('chrome-visible')), findsOneWidget);
+    final initialBackCenter = tester.getCenter(find.byTooltip('返回'));
+    final initialIndicatorCenter = tester.getCenter(
+      find.bySemanticsLabel('歌词页，第 1 页，共 3 页'),
+    );
+    expect(initialIndicatorCenter.dy, closeTo(initialBackCenter.dy, 1));
+    final headerRect = tester.getRect(
+      find.byKey(const ValueKey('lyrics-content-header-9001|详情页布局歌曲')),
+    );
+    final lyricsRect = tester.getRect(find.byType(ScrollingLyrics));
+    expect(lyricsRect.top - headerRect.bottom, lessThan(10));
+
+    await tester.fling(find.byType(PageView), const Offset(-700, 0), 1200);
+    await tester.pump(const Duration(milliseconds: 700));
+
+    expect(find.text('正在播放'), findsNothing);
+    expect(find.byKey(const ValueKey('landscape-player')), findsOneWidget);
+    final chromeBottom = tester.getBottomLeft(
+      find.byKey(const ValueKey('chrome-visible')),
+    );
+    final backRect = tester.getRect(find.byTooltip('返回'));
+    final recordRect = tester.getRect(
+      find.byKey(const ValueKey('vinyl-record-9001')),
+    );
+    expect(
+      tester.getTopLeft(find.byKey(const ValueKey('landscape-player'))).dy,
+      lessThan(chromeBottom.dy),
+    );
+    expect(recordRect.overlaps(backRect), isFalse);
+
+    await tester.fling(find.byType(PageView), const Offset(-700, 0), 1200);
+    await tester.pump(const Duration(milliseconds: 700));
+
+    expect(find.text('正在播放'), findsNothing);
+    expect(
+      find.byKey(const ValueKey('apple-landscape-player')),
+      findsOneWidget,
+    );
+    final artworkRect = tester.getRect(
+      find.byKey(const ValueKey('apple-artwork-9001')),
+    );
+    expect(
+      tester
+          .getTopLeft(find.byKey(const ValueKey('apple-landscape-player')))
+          .dy,
+      lessThan(chromeBottom.dy),
+    );
+    expect(artworkRect.overlaps(backRect), isFalse);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('player styles wrap from lyrics directly to apple', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final model = _SongDetailLayoutModel();
+    addTearDown(model.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SongDetailPage(model: model, song: model.testSong),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 350));
+
+    expect(find.byKey(const ValueKey('lyrics-page')), findsOneWidget);
+    await tester.fling(find.byType(PageView), const Offset(700, 0), 1200);
+    await tester.pump(const Duration(milliseconds: 700));
+
+    expect(find.byKey(const ValueKey('apple-portrait-player')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('tablet immersive lyrics use the chrome-adjacent top space', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final model = _SongDetailLayoutModel();
+    addTearDown(model.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SongDetailPage(model: model, song: model.testSong),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 350));
+
+    final backCenter = tester.getCenter(find.byTooltip('返回'));
+    final indicatorCenter = tester.getCenter(
+      find.bySemanticsLabel('歌词页，第 1 页，共 3 页'),
+    );
+    expect((backCenter.dy - indicatorCenter.dy).abs(), lessThanOrEqualTo(1));
+
+    await tester.tapAt(const Offset(640, 400));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 350));
+
+    final headerTop = tester
+        .getTopLeft(
+          find.byKey(const ValueKey('lyrics-content-header-9001|详情页布局歌曲')),
+        )
+        .dy;
+    expect(headerTop, greaterThanOrEqualTo(-8));
+    expect(headerTop, lessThanOrEqualTo(8));
+    expect(find.byKey(const ValueKey('chrome-hidden')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+}
+
+class _SongDetailLayoutModel extends AppModel {
+  _SongDetailLayoutModel() {
+    player = const PlayerSnapshot(
+      visible: true,
+      songId: '9001',
+      title: '详情页布局歌曲',
+      artist: '测试歌手',
+      source: '测试专辑',
+      coverUrl: '',
+      playing: true,
+      currentSeconds: 18,
+      durationSeconds: 180,
+      currentMilliseconds: 18000,
+      durationMilliseconds: 180000,
+      volume: 0.6,
+      mode: 'loop',
+    );
+    playerBarVisible = true;
+    showSongCovers = false;
+    songDetail = SongDetail(
+      song: testSong,
+      coverUrl: '',
+      lyricLines: const ['第一句歌词', '当前歌词'],
+      lyrics: const [
+        LyricLine(time: 0, text: '第一句歌词'),
+        LyricLine(time: 10, text: '当前歌词'),
+      ],
+      loading: false,
+    );
+  }
+
+  final MirrorItem testSong = const MirrorItem(
+    domId: 'song_detail_1',
+    kind: 'song',
+    title: '详情页布局歌曲',
+    subtitle: '测试歌手 · 测试专辑',
+    imageUrl: '',
+    href: 'https://music.163.com/#/song?id=9001',
+  );
+
+  @override
+  Future<void> openSongDetail(MirrorItem song) async {}
 }
 
 class _SlowArtworkModel extends AppModel {

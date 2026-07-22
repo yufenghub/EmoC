@@ -8,6 +8,36 @@ All notable public changes to EmoC will be documented in this file.
 
 Public versions should match the version in `pubspec.yaml`.
 
+## [1.0.5] - 2026-07-22
+
+### 新增 / Added
+
+- 新增三种可循环切换并记忆选择的歌词/播放器样式，覆盖手机与平板的横竖屏布局。
+  Added three cyclic, remembered lyrics/player styles with phone and tablet portrait/landscape layouts.
+- 新增网易云风格唱片页与 Apple Music 风格封面页，并补充封面切换、歌词焦点和沉浸显示动画。
+  Added NetEase-inspired record and Apple Music-inspired artwork views with artwork transitions, focused lyrics, and immersive animations.
+
+### 优化 / Improved
+
+- 优化歌词页在横屏、平板和沉浸模式下的空间利用、顶部控件位置、歌词虚化范围与滚动定位。
+  Improved lyrics-page space usage, top controls, fade regions, and scroll positioning across landscape, tablet, and immersive modes.
+- 优化桌面歌词在前后台切换和暂停状态下的显隐行为，并保持动画连贯。
+  Improved desktop-lyrics visibility across foreground/background and paused states while preserving smooth transitions.
+- 优化系统媒体会话、通知播放状态与播放器样式持久化。
+  Improved system media-session and notification state synchronization plus player-style persistence.
+
+### 修复 / Fixed
+
+- 修复部分歌词页布局溢出、标题位置偏移以及封面切换不连贯的问题。
+  Fixed lyrics-page overflow, title-position drift, and discontinuous artwork transitions.
+- 修复部分系统媒体控制操作可能错误唤起前台或未正确同步播放状态的问题。
+  Fixed cases where system media actions could incorrectly foreground the app or fail to synchronize playback state.
+
+### 验证 / Verification
+
+- Dart 静态分析、25 项 Flutter 自动化测试、Android 音频处理单元测试和 Release APK 构建均通过。
+  Dart analysis, 25 Flutter tests, Android audio-processing unit tests, and the release APK build all passed.
+
 ## [1.0.4] - 2026-07-14
 
 ### 优化 / Improved

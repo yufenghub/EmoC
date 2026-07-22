@@ -66,6 +66,7 @@ class AppModel extends ChangeNotifier {
   bool desktopLyricsMultiLine = false;
   bool desktopLyricsCenterLineLocked = false;
   bool desktopLyricsAutoHideInForeground = false;
+  bool desktopLyricsAutoHideWhenPaused = false;
   bool desktopLyricsFollowDynamicColor = false;
   int tabIndex = 0;
 
@@ -88,6 +89,7 @@ class AppModel extends ChangeNotifier {
   Color themeSeedColor = const Color(0xFF3F7BFF);
   Color desktopLyricsBackgroundColor = Colors.black;
   Color desktopLyricsTextColor = Colors.white;
+  int lyricsPlayerStyle = 0;
   int _noticeToken = 0;
 
   List<String> loginMethods = const [];
@@ -272,6 +274,17 @@ class AppModel extends ChangeNotifier {
       showSongCovers = true;
     }
     try {
+      final savedPlayerStyle = int.tryParse(
+        await NativeBridge.getString(
+              'lyricsPlayerStyle',
+            ).timeout(const Duration(seconds: 2), onTimeout: () => null) ??
+            '',
+      );
+      lyricsPlayerStyle = (savedPlayerStyle ?? 0).clamp(0, 2);
+    } catch (_) {
+      lyricsPlayerStyle = 0;
+    }
+    try {
       desktopLyricsEnabled =
           await NativeBridge.getString(
             'desktopLyricsEnabled',
@@ -319,6 +332,11 @@ class AppModel extends ChangeNotifier {
       desktopLyricsAutoHideInForeground =
           await NativeBridge.getString(
             'desktopLyricsAutoHideInForeground',
+          ).timeout(const Duration(seconds: 2), onTimeout: () => null) ==
+          'true';
+      desktopLyricsAutoHideWhenPaused =
+          await NativeBridge.getString(
+            'desktopLyricsAutoHideWhenPaused',
           ).timeout(const Duration(seconds: 2), onTimeout: () => null) ==
           'true';
       desktopLyricsFollowDynamicColor =
@@ -3843,6 +3861,20 @@ class AppModel extends ChangeNotifier {
         } catch (error) {
           _playIntentHoldUntil = null;
           _playIntentPlaying = null;
+          if (shouldPlay &&
+              player.hasSong &&
+              error.toString().contains('NO_ACTIVE_PLAYER')) {
+            // The cached player card can outlive the Android player process.
+            // Rebuild the same track instead of leaving a dead play button.
+            _nativePlaybackActive = false;
+            _localPauseRequested = false;
+            await clickSong(
+              player.asMirrorItem(),
+              fromList: currentPlaylist,
+              sourceIndex: currentSongIndex,
+            );
+            return;
+          }
           if (shouldPlay) {
             _localPauseRequested = true;
             player = _playerWith(playing: false);
@@ -4797,6 +4829,16 @@ class AppModel extends ChangeNotifier {
     }
   }
 
+  Future<void> setLyricsPlayerStyle(int value) async {
+    final next = value.clamp(0, 2);
+    if (lyricsPlayerStyle == next) return;
+    lyricsPlayerStyle = next;
+    notifyListeners();
+    try {
+      await NativeBridge.setString('lyricsPlayerStyle', next.toString());
+    } catch (_) {}
+  }
+
   Future<void> setDesktopLyricsEnabled(bool value) async {
     await _applyDesktopLyricsStyle();
     final applied = value
@@ -4829,6 +4871,7 @@ class AppModel extends ChangeNotifier {
     bool? multiLine,
     bool? centerLineLocked,
     bool? autoHideInForeground,
+    bool? autoHideWhenPaused,
     bool? followDynamicColor,
     Color? backgroundColor,
     Color? textColor,
@@ -4849,6 +4892,8 @@ class AppModel extends ChangeNotifier {
         centerLineLocked ?? desktopLyricsCenterLineLocked;
     desktopLyricsAutoHideInForeground =
         autoHideInForeground ?? desktopLyricsAutoHideInForeground;
+    desktopLyricsAutoHideWhenPaused =
+        autoHideWhenPaused ?? desktopLyricsAutoHideWhenPaused;
     desktopLyricsFollowDynamicColor =
         followDynamicColor ?? desktopLyricsFollowDynamicColor;
     desktopLyricsBackgroundColor =
@@ -4882,6 +4927,10 @@ class AppModel extends ChangeNotifier {
       NativeBridge.setString(
         'desktopLyricsAutoHideInForeground',
         desktopLyricsAutoHideInForeground.toString(),
+      ),
+      NativeBridge.setString(
+        'desktopLyricsAutoHideWhenPaused',
+        desktopLyricsAutoHideWhenPaused.toString(),
       ),
       NativeBridge.setString(
         'desktopLyricsFollowDynamicColor',
@@ -4985,6 +5034,7 @@ class AppModel extends ChangeNotifier {
       desktopLyricsMultiLine,
       desktopLyricsCenterLineLocked,
       desktopLyricsAutoHideInForeground,
+      desktopLyricsAutoHideWhenPaused,
       desktopLyricsFollowDynamicColor,
       backgroundColor.toARGB32(),
       textColor.toARGB32(),
@@ -5001,6 +5051,7 @@ class AppModel extends ChangeNotifier {
       multiLine: desktopLyricsMultiLine,
       centerLineLocked: desktopLyricsCenterLineLocked,
       autoHideInForeground: desktopLyricsAutoHideInForeground,
+      autoHideWhenPaused: desktopLyricsAutoHideWhenPaused,
       followDynamicColor: desktopLyricsFollowDynamicColor,
       backgroundColor: backgroundColor.toARGB32(),
       textColor: textColor.toARGB32(),
@@ -5034,6 +5085,7 @@ class AppModel extends ChangeNotifier {
       desktopLyricsFontSize.toStringAsFixed(1),
       desktopLyricsLocked,
       desktopLyricsMultiLine,
+      snapshot.playing,
     ].join('|');
     if (!force && key == _lastDesktopLyricsPayloadKey) return;
     _lastDesktopLyricsPayloadKey = key;
@@ -5042,6 +5094,7 @@ class AppModel extends ChangeNotifier {
         text: text.isEmpty ? '用音乐安放此刻' : text,
         title: title,
         artist: artist,
+        playing: snapshot.playing,
       ).catchError((_) {}),
     );
   }

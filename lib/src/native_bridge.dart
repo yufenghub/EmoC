@@ -3,7 +3,37 @@ part of '../main.dart';
 typedef SystemMediaCommandHandler =
     Future<void> Function(String action, Map<String, dynamic> arguments);
 
+@immutable
+class AudioSpectrumFrame {
+  const AudioSpectrumFrame({
+    this.bands = const <double>[],
+    this.rms = 0,
+    this.centroid = 0,
+  });
+
+  factory AudioSpectrumFrame.fromMap(Map<String, dynamic> map) {
+    final rawBands = map['bands'];
+    return AudioSpectrumFrame(
+      bands: rawBands is List
+          ? rawBands
+                .whereType<num>()
+                .map((value) => value.toDouble().clamp(0.0, 1.0).toDouble())
+                .toList(growable: false)
+          : const <double>[],
+      rms: _doubleOf(map['rms']).clamp(0.0, 1.0).toDouble(),
+      centroid: _doubleOf(map['centroid']).clamp(0.0, 1.0).toDouble(),
+    );
+  }
+
+  final List<double> bands;
+  final double rms;
+  final double centroid;
+}
+
 class NativeBridge {
+  static final ValueNotifier<AudioSpectrumFrame> audioSpectrum =
+      ValueNotifier<AudioSpectrumFrame>(const AudioSpectrumFrame());
+
   static void setSystemCommandHandler(SystemMediaCommandHandler handler) {
     _nativeChannel.setMethodCallHandler((call) async {
       final args = _mapOf(call.arguments);
@@ -13,6 +43,10 @@ class NativeBridge {
       }
       if (call.method != 'systemMediaCommand') return null;
       final action = _stringOf(args['action']);
+      if (action == 'audioSpectrum') {
+        audioSpectrum.value = AudioSpectrumFrame.fromMap(args);
+        return null;
+      }
       if (action.isNotEmpty) {
         await handler(action, args);
       }
@@ -127,6 +161,15 @@ class NativeBridge {
     return _nativeChannel.invokeMethod('setAllowMixedAudio', {'value': value});
   }
 
+  static Future<void> setAudioSpectrumEnabled(bool value) {
+    if (!value) {
+      audioSpectrum.value = const AudioSpectrumFrame();
+    }
+    return _nativeChannel.invokeMethod('setAudioSpectrumEnabled', {
+      'value': value,
+    });
+  }
+
   static Future<bool> setDesktopLyricsEnabled(
     bool value, {
     bool requestPermission = false,
@@ -158,6 +201,7 @@ class NativeBridge {
     required bool multiLine,
     required bool centerLineLocked,
     required bool autoHideInForeground,
+    required bool autoHideWhenPaused,
     required bool followDynamicColor,
     required int backgroundColor,
     required int textColor,
@@ -170,6 +214,7 @@ class NativeBridge {
       'multiLine': multiLine,
       'centerLineLocked': centerLineLocked,
       'autoHideInForeground': autoHideInForeground,
+      'autoHideWhenPaused': autoHideWhenPaused,
       'followDynamicColor': followDynamicColor,
       'backgroundColor': backgroundColor,
       'textColor': textColor,
@@ -180,11 +225,13 @@ class NativeBridge {
     required String text,
     required String title,
     required String artist,
+    required bool playing,
   }) {
     return _nativeChannel.invokeMethod('updateDesktopLyrics', {
       'text': text,
       'title': title,
       'artist': artist,
+      'playing': playing,
     });
   }
 

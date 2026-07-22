@@ -46,9 +46,13 @@ class _PlayerBarContent extends StatelessWidget {
     return Container(
       decoration: BoxDecoration(
         color: theme.colorScheme.surface,
-        border: Border(
-          top: BorderSide(color: theme.dividerColor.withValues(alpha: 0.4)),
-        ),
+        border: canOpenSongDetail
+            ? Border(
+                top: BorderSide(
+                  color: theme.dividerColor.withValues(alpha: 0.4),
+                ),
+              )
+            : null,
       ),
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
       child: Column(

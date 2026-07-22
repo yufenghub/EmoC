@@ -59,11 +59,14 @@ class DesktopLyricsOverlayController(private val context: Context) {
         prefs.getString("desktopLyricsCenterLineLocked", "false") == "true"
     private var autoHideInForeground =
         prefs.getString("desktopLyricsAutoHideInForeground", "false") == "true"
+    private var autoHideWhenPaused =
+        prefs.getString("desktopLyricsAutoHideWhenPaused", "false") == "true"
     private var followDynamicColor =
         prefs.getString("desktopLyricsFollowDynamicColor", "false") == "true"
     private var backgroundColor = prefs.getInt("desktopLyricsBackgroundColor", Color.BLACK)
     private var textColor = prefs.getInt("desktopLyricsTextColor", Color.WHITE)
     private var currentText = "用音乐安放此刻"
+    private var playbackActive = false
     private var renderedBackgroundColor = desktopBackgroundColor()
     private var renderedTextColor = textColor
     private var lastMinOverlayHeight = minOverlayHeight()
@@ -118,6 +121,7 @@ class DesktopLyricsOverlayController(private val context: Context) {
         multiLine: Boolean,
         centerLineLocked: Boolean,
         autoHideInForeground: Boolean,
+        autoHideWhenPaused: Boolean,
         followDynamicColor: Boolean,
         backgroundColor: Int,
         textColor: Int
@@ -129,6 +133,7 @@ class DesktopLyricsOverlayController(private val context: Context) {
         this.multiLine = multiLine
         this.centerLineLocked = centerLineLocked
         this.autoHideInForeground = autoHideInForeground
+        this.autoHideWhenPaused = autoHideWhenPaused
         this.followDynamicColor = followDynamicColor
         this.backgroundColor = backgroundColor
         this.textColor = textColor
@@ -140,6 +145,7 @@ class DesktopLyricsOverlayController(private val context: Context) {
             .putString("desktopLyricsMultiLine", this.multiLine.toString())
             .putString("desktopLyricsCenterLineLocked", this.centerLineLocked.toString())
             .putString("desktopLyricsAutoHideInForeground", this.autoHideInForeground.toString())
+            .putString("desktopLyricsAutoHideWhenPaused", this.autoHideWhenPaused.toString())
             .putString("desktopLyricsFollowDynamicColor", this.followDynamicColor.toString())
             .putInt("desktopLyricsBackgroundColor", this.backgroundColor)
             .putInt("desktopLyricsTextColor", this.textColor)
@@ -150,10 +156,14 @@ class DesktopLyricsOverlayController(private val context: Context) {
     fun setAppInForeground(inForeground: Boolean) {
         appInForeground = inForeground
         refreshLayoutForDisplayChange()
-        applyForegroundVisibility(animated = true)
+        // Hiding must be immediate. A fade-out scheduled after a track update
+        // leaves one rendered frame of desktop lyrics over the foreground app.
+        applyForegroundVisibility(animated = !inForeground)
     }
 
-    fun updateText(text: String, title: String, artist: String) {
+    fun updateText(text: String, title: String, artist: String, playing: Boolean) {
+        val playbackChanged = playbackActive != playing
+        playbackActive = playing
         currentText = text.ifBlank {
             listOf(title, artist)
                 .filter { it.isNotBlank() }
@@ -162,6 +172,7 @@ class DesktopLyricsOverlayController(private val context: Context) {
         }
         lyricView?.text = currentText
         refreshLayoutForDisplayChange()
+        applyForegroundVisibility(animated = playbackChanged && !shouldHideOverlay())
     }
 
     fun refreshLayoutForDisplayChange() {
@@ -219,6 +230,10 @@ class DesktopLyricsOverlayController(private val context: Context) {
         val view = createView()
         rootView = view
         lyricView?.text = currentText
+        if (shouldHideOverlay()) {
+            view.alpha = 0f
+            view.visibility = View.INVISIBLE
+        }
         val params = createLayoutParams()
         layoutParams = params
         applyStyle()
@@ -629,7 +644,7 @@ class DesktopLyricsOverlayController(private val context: Context) {
             updateLayout(it)
             saveBounds(it)
         }
-        applyForegroundVisibility(animated = true)
+        applyForegroundVisibility(animated = !shouldHideOverlay())
     }
 
     private fun desktopBackgroundDrawable(color: Int): GradientDrawable {
@@ -694,7 +709,7 @@ class DesktopLyricsOverlayController(private val context: Context) {
 
     private fun applyForegroundVisibility(animated: Boolean) {
         val root = rootView ?: return
-        val shouldHide = autoHideInForeground && appInForeground
+        val shouldHide = shouldHideOverlay()
         root.animate().cancel()
         if (shouldHide) {
             if (animated) {
@@ -702,7 +717,7 @@ class DesktopLyricsOverlayController(private val context: Context) {
                     .alpha(0f)
                     .setDuration(180L)
                     .withEndAction {
-                        if (autoHideInForeground && appInForeground) {
+                        if (shouldHideOverlay()) {
                             root.visibility = View.INVISIBLE
                         }
                     }
@@ -752,6 +767,11 @@ class DesktopLyricsOverlayController(private val context: Context) {
             .alpha(1f)
             .setDuration(120L)
             .start()
+    }
+
+    private fun shouldHideOverlay(): Boolean {
+        return (autoHideInForeground && appInForeground) ||
+            (autoHideWhenPaused && !playbackActive)
     }
 
     private fun scheduleHandleHide() {
