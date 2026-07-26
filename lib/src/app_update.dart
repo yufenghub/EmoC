@@ -58,7 +58,7 @@ class AppUpdateManager extends ChangeNotifier {
   static const _lastPromptedReleaseKey = 'lastPromptedUpdateRelease';
 
   AppUpdatePhase phase = AppUpdatePhase.idle;
-  String currentVersionName = '1.0.7';
+  String currentVersionName = '1.0.8';
   int currentVersionCode = 0;
   AppReleaseInfo? latestRelease;
   String downloadedTag = '';

@@ -4306,9 +4306,16 @@ class AppModel extends ChangeNotifier {
     }
 
     final start = blockedIndex >= 0 ? blockedIndex : currentSongIndex;
-    final nextIndex =
-        (start + skipDirection + blockedPlaylist.length) %
-        blockedPlaylist.length;
+    final nextIndex = _playbackOrder.indexAfterBlocked(
+      songs: blockedPlaylist,
+      blockedIndex: start,
+      mode: player.mode,
+      direction: skipDirection,
+    );
+    if (nextIndex < 0) {
+      _autoAdvanceInProgress = false;
+      return;
+    }
     unawaited(
       clickSong(
         blockedPlaylist[nextIndex],

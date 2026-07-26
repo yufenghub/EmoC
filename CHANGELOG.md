@@ -8,6 +8,17 @@ All notable public changes to EmoC will be documented in this file.
 
 Public versions should match the version in `pubspec.yaml`.
 
+## [1.0.8] - 2026-07-26
+
+### 修复 / Fixed
+
+- 修复随机播放一段时间后可能只在两首歌曲之间循环的问题。
+  Fixed shuffle playback occasionally collapsing into a two-track loop.
+- 修复更新提示无法通过点击卡片外空白区域关闭的问题。
+  Fixed the update prompt not closing when tapping outside the card.
+- 修复中国大陆网络环境下更新下载可能卡住或报错的问题。
+  Fixed update downloads stalling or failing on some mainland China networks.
+
 ## [1.0.7] - 2026-07-26
 
 ### 修复 / Fixed

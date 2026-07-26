@@ -169,6 +169,73 @@ void main() {
     expect(visited, hasLength(songs.length));
   });
 
+  test('shuffle does not collapse into a two-song loop across cycles', () {
+    final songs = List<MirrorItem>.generate(
+      7,
+      (index) => MirrorItem(
+        domId: 'shuffle_song_$index',
+        kind: 'song',
+        title: 'Shuffle Song $index',
+        subtitle: 'Artist',
+        imageUrl: '',
+        href: 'https://music.163.com/#/song?id=${100 + index}',
+      ),
+    );
+    final order = PlaybackOrderController(random: Random(19));
+    var current = 0;
+    final history = <int>[current];
+
+    for (var step = 0; step < 42; step++) {
+      current = order.nextIndex(
+        songs: songs,
+        currentIndex: current,
+        mode: 'shuffle',
+      );
+      history.add(current);
+    }
+
+    for (var index = 2; index < history.length; index++) {
+      expect(
+        history[index],
+        isNot(history[index - 2]),
+        reason: '随机播放不应在两首歌之间反复往返',
+      );
+    }
+  });
+
+  test('blocked shuffle candidates keep advancing the shuffle queue', () {
+    final songs = List<MirrorItem>.generate(
+      6,
+      (index) => MirrorItem(
+        domId: 'blocked_song_$index',
+        kind: 'song',
+        title: 'Blocked Song $index',
+        subtitle: 'Artist',
+        imageUrl: '',
+        href: 'https://music.163.com/#/song?id=${200 + index}',
+      ),
+    );
+    final order = PlaybackOrderController(random: Random(5));
+    var candidate = order.nextIndex(
+      songs: songs,
+      currentIndex: 0,
+      mode: 'shuffle',
+    );
+    final visited = <int>{0, candidate};
+
+    for (var step = 0; step < songs.length - 2; step++) {
+      candidate = order.indexAfterBlocked(
+        songs: songs,
+        blockedIndex: candidate,
+        mode: 'shuffle',
+        direction: 1,
+      );
+      visited.add(candidate);
+    }
+
+    expect(visited, hasLength(songs.length));
+  });
+
   testWidgets('cover-disabled artwork uses the local icon', (tester) async {
     await tester.pumpWidget(
       const MaterialApp(

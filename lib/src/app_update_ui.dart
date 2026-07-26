@@ -85,6 +85,8 @@ Future<void> showAppUpdateDialog(
   }
   final shouldDownload = await showDialog<bool>(
     context: context,
+    barrierDismissible: true,
+    barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
     builder: (context) {
       final notes = target!.notes.trim().isEmpty
           ? '本次更新未提供更新说明。'
