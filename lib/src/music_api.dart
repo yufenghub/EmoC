@@ -7,6 +7,13 @@ typedef PlainMusicRequest =
       required bool useGet,
     });
 
+typedef EncryptedMusicRequest =
+    Future<Map<String, dynamic>> Function(
+      String path,
+      Map<String, dynamic> data, {
+      required Map<String, String> queryParameters,
+    });
+
 class MusicApiException implements Exception {
   const MusicApiException(this.message, {this.code = 0});
 
@@ -22,17 +29,25 @@ class MusicMutationApiClient {
     String baseUrl = 'https://music.163.com',
     Future<String> Function(String url)? cookieLoader,
     PlainMusicRequest? plainRequestOverride,
-  }) : this._internal(baseUrl, cookieLoader, plainRequestOverride);
+    EncryptedMusicRequest? encryptedRequestOverride,
+  }) : this._internal(
+         baseUrl,
+         cookieLoader,
+         plainRequestOverride,
+         encryptedRequestOverride,
+       );
 
   MusicMutationApiClient._internal(
     this._baseUrl,
     this._cookieLoader,
     this._plainRequestOverride,
+    this._encryptedRequestOverride,
   );
 
   final String _baseUrl;
   final Future<String> Function(String url)? _cookieLoader;
   final PlainMusicRequest? _plainRequestOverride;
+  final EncryptedMusicRequest? _encryptedRequestOverride;
   static const String _nonce = '0CoJUm6Qyw8W8jud';
   static const String _iv = '0102030405060708';
   static const String _publicKey = '010001';
@@ -89,25 +104,81 @@ class MusicMutationApiClient {
     );
   }
 
-  Future<void> setSongLiked(String songId, bool liked) {
+  Future<void> setSongLiked(
+    String songId,
+    bool liked, {
+    String likedPlaylistId = '',
+  }) {
     return _serial(() async {
       final typedSongId = int.tryParse(songId) ?? songId;
       final likeValue = liked.toString();
-      await _request(
-        '/weapi/radio/like',
-        <String, dynamic>{
-          'alg': 'itembased',
-          'trackId': typedSongId,
-          'like': liked,
-          'time': DateTime.now().millisecondsSinceEpoch,
-        },
-        queryParameters: <String, String>{
-          'alg': 'itembased',
-          'trackId': '$typedSongId',
-          'like': likeValue,
-          'time': '3',
-        },
-      );
+      final radioPayload = <String, dynamic>{
+        'alg': 'itembased',
+        'trackId': typedSongId,
+        'like': liked,
+        'time': '3',
+      };
+      final radioQuery = <String, String>{
+        'alg': 'itembased',
+        'trackId': '$typedSongId',
+        'like': likeValue,
+        'time': '3',
+      };
+      Object? lastError;
+
+      Future<bool> attempt(Future<void> Function() operation) async {
+        try {
+          await operation();
+          return true;
+        } catch (error) {
+          lastError = error;
+          return false;
+        }
+      }
+
+      if (likedPlaylistId.isNotEmpty) {
+        final playlistPayload = _playlistMutationPayload(
+          operation: liked ? 'add' : 'del',
+          playlistId: likedPlaylistId,
+          songId: songId,
+        );
+        if (await attempt(
+          () async => _sendEncryptedRequest(
+            '/weapi/playlist/manipulate/tracks',
+            playlistPayload,
+          ),
+        )) {
+          return;
+        }
+      }
+      if (await attempt(
+        () async => _sendEncryptedRequest(
+          '/weapi/radio/like',
+          radioPayload,
+          queryParameters: radioQuery,
+        ),
+      )) {
+        return;
+      }
+      if (await attempt(
+        () async => _sendPlainRequest('/api/radio/like', radioPayload),
+      )) {
+        return;
+      }
+      if (likedPlaylistId.isNotEmpty &&
+          await attempt(
+            () async => _sendPlainRequest(
+              '/api/playlist/manipulate/tracks',
+              _playlistMutationPayload(
+                operation: liked ? 'add' : 'del',
+                playlistId: likedPlaylistId,
+                songId: songId,
+              ),
+            ),
+          )) {
+        return;
+      }
+      throw MusicApiException('歌曲操作失败：${lastError ?? '所有接口均未生效'}');
     });
   }
 
@@ -117,15 +188,29 @@ class MusicMutationApiClient {
     required String songId,
   }) {
     return _serial(() async {
-      final typedSongId = int.tryParse(songId) ?? songId;
-      final trackIds = jsonEncode(<dynamic>[typedSongId]);
-      await _request('/weapi/playlist/manipulate/tracks', <String, dynamic>{
-        'op': operation,
-        'pid': int.tryParse(playlistId) ?? playlistId,
-        'trackIds': trackIds,
-        'imme': 'true',
-      });
+      await _sendEncryptedRequest(
+        '/weapi/playlist/manipulate/tracks',
+        _playlistMutationPayload(
+          operation: operation,
+          playlistId: playlistId,
+          songId: songId,
+        ),
+      );
     });
+  }
+
+  Map<String, dynamic> _playlistMutationPayload({
+    required String operation,
+    required String playlistId,
+    required String songId,
+  }) {
+    final typedSongId = int.tryParse(songId) ?? songId;
+    return <String, dynamic>{
+      'op': operation,
+      'pid': int.tryParse(playlistId) ?? playlistId,
+      'trackIds': jsonEncode(<dynamic>[typedSongId]),
+      'imme': 'true',
+    };
   }
 
   Future<T> _serial<T>(Future<T> Function() operation) async {
@@ -305,6 +390,18 @@ class MusicMutationApiClient {
       return override(path, data, useGet: useGet);
     }
     return _plainRequest(path, data, useGet: useGet);
+  }
+
+  Future<Map<String, dynamic>> _sendEncryptedRequest(
+    String path,
+    Map<String, dynamic> data, {
+    Map<String, String> queryParameters = const <String, String>{},
+  }) {
+    final override = _encryptedRequestOverride;
+    if (override != null) {
+      return override(path, data, queryParameters: queryParameters);
+    }
+    return _request(path, data, queryParameters: queryParameters);
   }
 
   Future<String> _loadCookie() async {

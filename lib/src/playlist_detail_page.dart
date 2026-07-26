@@ -121,9 +121,18 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
               : 0,
         );
         final viewportMatches = _viewport.matches(widget.model, filteredSongs);
+        final pendingVisibleCount = filteredSongs.isEmpty
+            ? 0
+            : (_viewport.readyCount > _viewport.batchSize
+                  ? (_viewport.readyCount < filteredSongs.length
+                        ? _viewport.readyCount
+                        : filteredSongs.length)
+                  : (filteredSongs.length < _viewport.batchSize
+                        ? filteredSongs.length
+                        : _viewport.batchSize));
         final visibleSongs = viewportMatches
             ? _viewport.visibleSongs
-            : const <MirrorItem>[];
+            : filteredSongs.take(pendingVisibleCount).toList(growable: false);
         final searching = _searchQuery.isNotEmpty;
         return SafeArea(
           child: RefreshIndicator(

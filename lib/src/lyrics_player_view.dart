@@ -364,6 +364,9 @@ class _PortraitLyricsPlayer extends StatelessWidget {
                     songIdentity: song.id,
                     showCover: model.showSongCovers,
                     rotation: rotation,
+                    transitionDirection: model.artworkTransitionDirectionFor(
+                      song,
+                    ),
                   ),
                 ),
                 Transform.translate(
@@ -377,7 +380,6 @@ class _PortraitLyricsPlayer extends StatelessWidget {
                     onAlignmentChanged: onTitleAlignmentChanged,
                   ),
                 ),
-                const SizedBox(height: 5),
                 Expanded(
                   child: LayoutBuilder(
                     builder: (context, lyricConstraints) {
@@ -397,14 +399,14 @@ class _PortraitLyricsPlayer extends StatelessWidget {
                             alignmentIndex: lyricsAlignmentIndex,
                             onAlignmentChanged: onLyricsAlignmentChanged,
                             topFadeLift: topLyricFadeLift,
-                            bottomFadeGap: 6,
+                            topFadeGap: 0,
+                            bottomFadeGap: 0,
                           ),
                         ),
                       );
                     },
                   ),
                 ),
-                const SizedBox(height: 6),
                 _ExpandedPlayerProgress(model: model, player: player),
                 const SizedBox(height: 6),
                 KeyedSubtree(
@@ -469,6 +471,9 @@ class _LandscapeLyricsPlayer extends StatelessWidget {
                     songIdentity: song.id,
                     showCover: model.showSongCovers,
                     rotation: rotation,
+                    transitionDirection: model.artworkTransitionDirectionFor(
+                      song,
+                    ),
                   ),
                 ),
               ),
@@ -530,6 +535,7 @@ class _RecordDeck extends StatelessWidget {
     required this.songIdentity,
     required this.showCover,
     required this.rotation,
+    required this.transitionDirection,
   });
 
   final double size;
@@ -537,6 +543,7 @@ class _RecordDeck extends StatelessWidget {
   final String songIdentity;
   final bool showCover;
   final Animation<double> rotation;
+  final int transitionDirection;
 
   @override
   Widget build(BuildContext context) {
@@ -547,29 +554,37 @@ class _RecordDeck extends StatelessWidget {
         child: SizedBox.square(
           dimension: coverSize,
           child: RepaintBoundary(
-            child: RotationTransition(
-              key: ValueKey('vinyl-record-$songIdentity'),
-              turns: rotation,
-              child: ClipOval(
-                child: _SlidingCoverSwitcher(
-                  transitionKey: '$songIdentity|$coverUrl|$showCover',
-                  child: showCover
-                      ? CoverImage(
-                          url: coverUrl,
-                          identity: songIdentity,
-                          fallbackIcon: Icons.album_outlined,
-                          preferredSize: 800,
-                          decodeSize: 512,
-                        )
-                      : ColoredBox(
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.surfaceContainerHighest,
-                          child: Icon(
-                            Icons.album_outlined,
-                            size: coverSize * 0.34,
+            child: ClipOval(
+              child: _SlidingCoverSwitcher(
+                identityKey: songIdentity,
+                transitionKey: '$songIdentity|$coverUrl|$showCover',
+                coverUrl: coverUrl,
+                showCover: showCover,
+                direction: transitionDirection,
+                preferredSize: 800,
+                decodeSize: 512,
+                child: KeyedSubtree(
+                  key: ValueKey('vinyl-record-$songIdentity'),
+                  child: RotationTransition(
+                    turns: rotation,
+                    child: showCover
+                        ? CoverImage(
+                            url: coverUrl,
+                            identity: songIdentity,
+                            fallbackIcon: Icons.album_outlined,
+                            preferredSize: 800,
+                            decodeSize: 512,
+                          )
+                        : ColoredBox(
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.surfaceContainerHighest,
+                            child: Icon(
+                              Icons.album_outlined,
+                              size: coverSize * 0.34,
+                            ),
                           ),
-                        ),
+                  ),
                 ),
               ),
             ),
@@ -580,47 +595,227 @@ class _RecordDeck extends StatelessWidget {
   }
 }
 
-class _SlidingCoverSwitcher extends StatelessWidget {
+class _SlidingCoverSwitcher extends StatefulWidget {
   const _SlidingCoverSwitcher({
+    required this.identityKey,
     required this.transitionKey,
+    required this.coverUrl,
+    required this.showCover,
+    required this.direction,
+    required this.child,
+    this.preferredSize = 800,
+    this.decodeSize = 512,
+  });
+
+  final String identityKey;
+  final String transitionKey;
+  final String coverUrl;
+  final bool showCover;
+  final int direction;
+  final Widget child;
+  final int preferredSize;
+  final int decodeSize;
+
+  @override
+  State<_SlidingCoverSwitcher> createState() => _SlidingCoverSwitcherState();
+}
+
+class _PreparedCoverTransition {
+  const _PreparedCoverTransition({
+    required this.identityKey,
+    required this.direction,
     required this.child,
   });
 
-  final String transitionKey;
+  final String identityKey;
+  final double direction;
   final Widget child;
+}
+
+class _SlidingCoverSwitcherState extends State<_SlidingCoverSwitcher>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _motion;
+  late Widget _currentChild;
+  late String _currentIdentityKey;
+  _PreparedCoverTransition? _incoming;
+  _PreparedCoverTransition? _queued;
+  int _prepareGeneration = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIdentityKey = widget.identityKey;
+    _currentChild = _keyedChild(widget.transitionKey, widget.child);
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 520),
+    )..addStatusListener(_handleAnimationStatus);
+    _motion = CurvedAnimation(
+      parent: _controller,
+      curve: const Cubic(0.12, 0.82, 0.16, 1),
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant _SlidingCoverSwitcher oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.transitionKey == widget.transitionKey) {
+      if (_incoming == null) {
+        _currentChild = _keyedChild(widget.transitionKey, widget.child);
+      }
+      return;
+    }
+    _scheduleTransition();
+  }
+
+  @override
+  void dispose() {
+    _prepareGeneration += 1;
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Widget _keyedChild(String key, Widget child) {
+    return KeyedSubtree(key: ValueKey('sliding-cover-$key'), child: child);
+  }
+
+  String _normalizedCoverUrl(String value) {
+    return _absoluteMusicUrl(value).trim();
+  }
+
+  void _scheduleTransition() {
+    final generation = ++_prepareGeneration;
+    final identityKey = widget.identityKey;
+    final transitionKey = widget.transitionKey;
+    final coverUrl = _normalizedCoverUrl(widget.coverUrl);
+    final direction = widget.direction < 0 ? -1.0 : 1.0;
+    final child = _keyedChild(transitionKey, widget.child);
+    unawaited(
+      _prepareTransition(
+        generation: generation,
+        identityKey: identityKey,
+        transitionKey: transitionKey,
+        coverUrl: coverUrl,
+        direction: direction,
+        child: child,
+      ),
+    );
+  }
+
+  Future<void> _prepareTransition({
+    required int generation,
+    required String identityKey,
+    required String transitionKey,
+    required String coverUrl,
+    required double direction,
+    required Widget child,
+  }) async {
+    if (widget.showCover) {
+      final ready = await _preloadCover(coverUrl);
+      if (!ready) return;
+    }
+    if (!mounted || generation != _prepareGeneration) return;
+    final prepared = _PreparedCoverTransition(
+      identityKey: identityKey,
+      direction: direction,
+      child: child,
+    );
+
+    if (_incoming?.identityKey == identityKey) {
+      setState(() => _incoming = prepared);
+      return;
+    }
+    if (_queued?.identityKey == identityKey) {
+      _queued = prepared;
+      return;
+    }
+    if (_currentIdentityKey == identityKey && _incoming == null) {
+      setState(() {
+        _currentChild = child;
+      });
+      return;
+    }
+    if (_controller.isAnimating || _incoming != null) {
+      _queued = prepared;
+      return;
+    }
+    _beginTransition(prepared);
+  }
+
+  Future<bool> _preloadCover(String coverUrl) async {
+    final candidates = _coverImageCandidates(
+      coverUrl,
+      preferredSize: widget.preferredSize,
+    );
+    if (candidates.isEmpty) return false;
+    try {
+      final entry = await CoverRuntimeCache.instance
+          .load(candidates)
+          .timeout(const Duration(seconds: 8));
+      if (entry == null || !mounted) return false;
+      final provider = ResizeImage.resizeIfNeeded(
+        widget.decodeSize,
+        widget.decodeSize,
+        MemoryImage(entry.bytes),
+      );
+      await precacheImage(
+        provider,
+        context,
+      ).timeout(const Duration(seconds: 4));
+      return mounted;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  void _beginTransition(_PreparedCoverTransition transition) {
+    if (!mounted) return;
+    setState(() => _incoming = transition);
+    _controller.forward(from: 0);
+  }
+
+  void _handleAnimationStatus(AnimationStatus status) {
+    if (status != AnimationStatus.completed || !mounted) return;
+    final completed = _incoming;
+    if (completed == null) return;
+    final next = _queued;
+    _queued = null;
+    setState(() {
+      _currentIdentityKey = completed.identityKey;
+      _currentChild = completed.child;
+      _incoming = null;
+    });
+    _controller.reset();
+    if (next != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _beginTransition(next);
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final currentKey = ValueKey('sliding-cover-$transitionKey');
-    final direction = transitionKey.hashCode.isEven ? 1.0 : -1.0;
     return ClipRect(
-      child: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 380),
-        reverseDuration: const Duration(milliseconds: 320),
-        switchInCurve: Curves.easeOutCubic,
-        switchOutCurve: Curves.easeInOutCubic,
-        layoutBuilder: (currentChild, previousChildren) {
+      child: AnimatedBuilder(
+        animation: _motion,
+        builder: (context, _) {
+          final incoming = _incoming;
           return Stack(
             fit: StackFit.expand,
-            children: [...previousChildren, ?currentChild],
+            children: [
+              RepaintBoundary(child: _currentChild),
+              if (incoming != null)
+                FractionalTranslation(
+                  translation: Offset(
+                    incoming.direction * (1 - _motion.value),
+                    0,
+                  ),
+                  child: RepaintBoundary(child: incoming.child),
+                ),
+            ],
           );
         },
-        transitionBuilder: (transitionChild, animation) {
-          final incoming = transitionChild.key == currentKey;
-          final offset = incoming
-              ? Tween<Offset>(begin: Offset(direction, 0), end: Offset.zero)
-              : Tween<Offset>(
-                  begin: Offset(-direction * 0.12, 0),
-                  end: Offset.zero,
-                );
-          return SlideTransition(
-            position: offset.animate(
-              CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
-            ),
-            child: transitionChild,
-          );
-        },
-        child: KeyedSubtree(key: currentKey, child: child),
       ),
     );
   }
@@ -977,6 +1172,7 @@ class _VinylScrollingLyrics extends StatelessWidget {
     required this.alignmentIndex,
     required this.onAlignmentChanged,
     this.topFadeLift = 0,
+    this.topFadeGap = 0,
     this.bottomFadeGap = 0,
   });
 
@@ -987,14 +1183,18 @@ class _VinylScrollingLyrics extends StatelessWidget {
   final int alignmentIndex;
   final ValueChanged<int> onAlignmentChanged;
   final double topFadeLift;
+  final double topFadeGap;
   final double bottomFadeGap;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final safeHeight = max(1.0, height);
-    final topFadeStop = (0.14 - topFadeLift / safeHeight)
-        .clamp(0.02, 0.14)
+    final topFadeGapFraction = (topFadeGap / safeHeight)
+        .clamp(0.0, 0.08)
+        .toDouble();
+    final topFadeStop = (0.14 - topFadeLift / safeHeight + topFadeGapFraction)
+        .clamp(topFadeGapFraction + 0.02, 0.20)
         .toDouble();
     final bottomFadeGapFraction = (bottomFadeGap / safeHeight)
         .clamp(0.0, 0.08)
@@ -1045,11 +1245,18 @@ class _VinylScrollingLyrics extends StatelessWidget {
           end: Alignment.bottomCenter,
           colors: [
             Colors.transparent,
+            Colors.transparent,
             Colors.black,
             Colors.black,
             Colors.transparent,
           ],
-          stops: [0, topFadeStop, bottomFadeStart, bottomFadeEnd],
+          stops: [
+            0,
+            topFadeGapFraction,
+            topFadeStop,
+            bottomFadeStart,
+            bottomFadeEnd,
+          ],
         ).createShader(bounds),
         child: ClipRect(
           child: ScrollingLyrics(

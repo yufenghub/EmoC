@@ -182,6 +182,7 @@ class AppRoot extends StatelessWidget {
         children: [
           const MainShell(),
           if (model.loginGateVisible) OfficialLoginGate(model: model),
+          AppUpdatePromptCoordinator(model: model),
           Positioned(
             left: 18,
             right: 18,

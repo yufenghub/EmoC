@@ -160,6 +160,9 @@ class _ApplePortraitPlayer extends StatelessWidget {
                     songIdentity: song.id,
                     showCover: model.showSongCovers,
                     playing: player.playing,
+                    transitionDirection: model.artworkTransitionDirectionFor(
+                      song,
+                    ),
                   ),
                 ),
               ),
@@ -252,6 +255,9 @@ class _AppleLandscapePlayer extends StatelessWidget {
                     songIdentity: song.id,
                     showCover: model.showSongCovers,
                     playing: player.playing,
+                    transitionDirection: model.artworkTransitionDirectionFor(
+                      song,
+                    ),
                   ),
                 ),
               ),
@@ -321,6 +327,7 @@ class _AppleArtwork extends StatelessWidget {
     required this.songIdentity,
     required this.showCover,
     required this.playing,
+    required this.transitionDirection,
   });
 
   final double size;
@@ -328,46 +335,66 @@ class _AppleArtwork extends StatelessWidget {
   final String songIdentity;
   final bool showCover;
   final bool playing;
+  final int transitionDirection;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return AnimatedScale(
-      key: ValueKey('apple-artwork-$songIdentity'),
-      scale: playing ? 1 : 0.965,
-      duration: const Duration(milliseconds: 420),
-      curve: Curves.easeOutCubic,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 320),
-        curve: Curves.easeOutCubic,
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(14),
-          boxShadow: [
-            BoxShadow(
-              color: colors.shadow.withValues(alpha: playing ? 0.2 : 0.13),
-              blurRadius: playing ? 28 : 20,
-              offset: Offset(0, playing ? 14 : 9),
+    return SizedBox.square(
+      dimension: size,
+      child: Stack(
+        fit: StackFit.expand,
+        clipBehavior: Clip.none,
+        children: [
+          AnimatedScale(
+            scale: playing ? 1 : 0.965,
+            duration: const Duration(milliseconds: 420),
+            curve: Curves.easeOutCubic,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 320),
+              curve: Curves.easeOutCubic,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(14),
+                boxShadow: [
+                  BoxShadow(
+                    color: colors.shadow.withValues(
+                      alpha: playing ? 0.2 : 0.13,
+                    ),
+                    blurRadius: playing ? 28 : 20,
+                    offset: Offset(0, playing ? 14 : 9),
+                  ),
+                ],
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: _SlidingCoverSwitcher(
+                identityKey: songIdentity,
+                transitionKey: '$songIdentity|$coverUrl|$showCover',
+                coverUrl: coverUrl,
+                showCover: showCover,
+                direction: transitionDirection,
+                preferredSize: 800,
+                decodeSize: 512,
+                child: showCover
+                    ? CoverImage(
+                        url: coverUrl,
+                        identity: songIdentity,
+                        fallbackIcon: Icons.album_outlined,
+                        preferredSize: 800,
+                        decodeSize: 512,
+                      )
+                    : ColoredBox(
+                        color: colors.surfaceContainerHighest,
+                        child: Icon(Icons.album_outlined, size: size * 0.28),
+                      ),
+              ),
             ),
-          ],
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: _SlidingCoverSwitcher(
-          transitionKey: '$songIdentity|$coverUrl|$showCover',
-          child: showCover
-              ? CoverImage(
-                  url: coverUrl,
-                  identity: songIdentity,
-                  fallbackIcon: Icons.album_outlined,
-                  preferredSize: 800,
-                  decodeSize: 512,
-                )
-              : ColoredBox(
-                  color: colors.surfaceContainerHighest,
-                  child: Icon(Icons.album_outlined, size: size * 0.28),
-                ),
-        ),
+          ),
+          IgnorePointer(
+            child: SizedBox.expand(
+              key: ValueKey('apple-artwork-$songIdentity'),
+            ),
+          ),
+        ],
       ),
     );
   }

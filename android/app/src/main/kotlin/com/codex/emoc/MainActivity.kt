@@ -38,6 +38,7 @@ import java.lang.ref.WeakReference
 class MainActivity : FlutterActivity() {
     private var ownedNativeChannel: MethodChannel? = null
     private var ownedSystemMediaController: SystemMediaController? = null
+    private var ownedAppUpdateController: AppUpdateController? = null
     private var player: ExoPlayer?
         get() = sharedPlayer
         set(value) { sharedPlayer = value }
@@ -122,11 +123,16 @@ class MainActivity : FlutterActivity() {
     override fun onResume() {
         super.onResume()
         activeActivity = WeakReference(this)
+        sharedAppInForeground = true
+        ownedAppUpdateController?.onHostResumed(this)
         desktopLyricsOverlay?.setAppInForeground(true)
         notifySystemThemeChanged()
     }
 
     override fun onPause() {
+        if (activeActivity?.get() === this) {
+            sharedAppInForeground = false
+        }
         desktopLyricsOverlay?.setAppInForeground(false)
         keepPlaybackServiceAliveIfNeeded()
         super.onPause()
@@ -150,27 +156,16 @@ class MainActivity : FlutterActivity() {
             MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "emoc/native")
         ownedNativeChannel = engineChannel
         nativeChannel = engineChannel
-        systemMediaController?.release()
-        val mediaController = SystemMediaController(applicationContext, object : SystemMediaController.Callbacks {
-            override fun onPlay() = handleSystemMediaAction(SystemMediaController.ACTION_PLAY)
-            override fun onPause() = handleSystemMediaAction(SystemMediaController.ACTION_PAUSE)
-            override fun onPrevious() = handleSystemMediaAction(SystemMediaController.ACTION_PREVIOUS)
-            override fun onNext() = handleSystemMediaAction(SystemMediaController.ACTION_NEXT)
-            override fun onSeekTo(positionMs: Long) {
-                player?.seekTo(positionMs.coerceAtLeast(0L))
-                audioSpectrumDecoder?.seekTo(positionMs)
-                updateSystemMedia()
-                notifyFlutter("seek", mapOf("positionMs" to positionMs.coerceAtLeast(0L)))
+        val mediaController = systemMediaController
+            ?: SystemMediaController(applicationContext, mediaSessionCallbacks).also {
+                systemMediaController = it
             }
-            override fun onCoverColor(songId: String, coverUrl: String, color: Int) {
-                notifyFlutter(
-                    "coverColorChanged",
-                    mapOf("songId" to songId, "coverUrl" to coverUrl, "color" to color)
-                )
-            }
-        })
         ownedSystemMediaController = mediaController
-        systemMediaController = mediaController
+        ownedAppUpdateController?.close()
+        val updateController = AppUpdateController(applicationContext) { action, payload ->
+            notifyFlutter(action, payload)
+        }
+        ownedAppUpdateController = updateController
         engineChannel.setMethodCallHandler { call, result ->
                 when (call.method) {
                     "playUrl" -> {
@@ -360,11 +355,16 @@ class MainActivity : FlutterActivity() {
                                 .takeIf { it != C.TIME_UNSET && it > 0L } ?: 0L
                             val position = current.currentPosition.coerceAtLeast(0L)
                             val ended = current.playbackState == Player.STATE_ENDED
-                            val wantsPlayback = current.playWhenReady && !ended
+                            // STATE_ENDED is a hand-off state while Dart resolves the
+                            // next playable item. Keep the public playback state alive
+                            // unless the user explicitly paused.
+                            val waitingForNext = ended && !userPaused
+                            val wantsPlayback =
+                                !userPaused && (current.playWhenReady || waitingForNext)
                             result.success(
                                 stateMap(
                                     active = true,
-                                    playing = wantsPlayback && !userPaused,
+                                    playing = wantsPlayback,
                                     currentMs = if (playerPrepared) position else 0L,
                                     durationMs = if (playerPrepared) duration else 0L,
                                     ended = ended
@@ -385,6 +385,44 @@ class MainActivity : FlutterActivity() {
                     "openExternalUrl" -> {
                         val url = call.argument<String>("url").orEmpty()
                         result.success(openExternalUrl(url))
+                    }
+                    "getAppVersion" -> {
+                        result.success(updateController.installedVersion())
+                    }
+                    "getDownloadedUpdate" -> {
+                        result.success(updateController.downloadedUpdate())
+                    }
+                    "checkLatestRelease" -> {
+                        updateController.checkLatestRelease(
+                            onSuccess = { release -> result.success(release) },
+                            onError = { code, message ->
+                                result.error(code, message, null)
+                            }
+                        )
+                    }
+                    "downloadUpdate" -> {
+                        val release = (call.arguments as? Map<*, *>)
+                            ?.entries
+                            ?.associate { entry -> entry.key.toString() to entry.value }
+                            ?: emptyMap()
+                        updateController.downloadUpdate(
+                            release = release,
+                            onSuccess = { downloaded -> result.success(downloaded) },
+                            onError = { code, message ->
+                                result.error(code, message, null)
+                            }
+                        )
+                    }
+                    "installDownloadedUpdate" -> {
+                        try {
+                            result.success(updateController.installDownloaded(this))
+                        } catch (error: Exception) {
+                            result.error(
+                                "UPDATE_INSTALL_FAILED",
+                                error.message ?: "无法打开系统安装界面",
+                                null
+                            )
+                        }
                     }
                     "prefsGet" -> {
                         val key = call.argument<String>("key").orEmpty()
@@ -473,15 +511,21 @@ class MainActivity : FlutterActivity() {
         metadata: TrackMetadata,
         result: MethodChannel.Result?
     ) {
-        ensureNotificationPermission()
+        // A transport command can replace the track while the Flutter activity
+        // is stopped. Requesting a runtime permission from that path lets some
+        // Android variants foreground the task. Permission UI is only valid
+        // while the user is already interacting with the app.
+        if (sharedAppInForeground) {
+            ensureNotificationPermission()
+        }
         val generation = playGeneration + 1
         playGeneration = generation
         val previousPlayer = player
         val keepPreviousSystemMedia =
             previousPlayer != null &&
-                previousPlayer.playWhenReady &&
                 !userPaused &&
-                previousPlayer.playbackState != Player.STATE_ENDED
+                (previousPlayer.playWhenReady ||
+                    previousPlayer.playbackState == Player.STATE_ENDED)
         if (keepPreviousSystemMedia) {
             updateSystemMedia()
         }
@@ -490,7 +534,10 @@ class MainActivity : FlutterActivity() {
         if (playerVolume <= 0.02f) {
             playerVolume = 0.7f
         }
-        releasePlayer(clearSystemMedia = !keepPreviousSystemMedia)
+        releasePlayer(
+            clearSystemMedia = !keepPreviousSystemMedia,
+            preserveAudioFocus = keepPreviousSystemMedia
+        )
         currentTrack = metadata
         currentPlaybackUrl = url
         if (!keepPreviousSystemMedia) {
@@ -709,12 +756,16 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun handleSystemMediaSeek(positionMs: Long) {
+        val targetMs = positionMs.coerceAtLeast(0L)
+        player?.seekTo(targetMs)
+        audioSpectrumDecoder?.seekTo(targetMs)
+        updateSystemMedia()
+        notifyFlutter("seek", mapOf("positionMs" to targetMs))
+    }
+
     private fun notifyFlutter(action: String, arguments: Map<String, Any> = emptyMap()) {
-        val payload = HashMap<String, Any>(arguments)
-        payload["action"] = action
-        Handler(Looper.getMainLooper()).post {
-            nativeChannel?.invokeMethod("systemMediaCommand", payload)
-        }
+        dispatchFlutterCommand(action, arguments)
     }
 
     private fun notifyTrackEndedWithRetries(generation: Int, songId: String) {
@@ -916,7 +967,10 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun releasePlayer(clearSystemMedia: Boolean = true) {
+    private fun releasePlayer(
+        clearSystemMedia: Boolean = true,
+        preserveAudioFocus: Boolean = false
+    ) {
         playerPrepared = false
         pausedByAudioFocusLoss = false
         stopSpectrumDecoder()
@@ -927,7 +981,9 @@ class MainActivity : FlutterActivity() {
             systemMediaController?.cancel()
             PlaybackKeepAliveService.stop(this)
         }
-        abandonAudioFocus()
+        if (!preserveAudioFocus) {
+            abandonAudioFocus()
+        }
     }
 
     private fun pauseForExternalAudio() {
@@ -1017,6 +1073,8 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        ownedAppUpdateController?.close()
+        ownedAppUpdateController = null
         val isActiveActivity = activeActivity?.get() === this
         if (isActiveActivity && shouldKeepPlaybackAliveOnDestroy()) {
             PlaybackKeepAliveService.start(this, currentTrack)
@@ -1062,6 +1120,8 @@ class MainActivity : FlutterActivity() {
         private var sharedNativeChannel: MethodChannel? = null
         private var sharedSystemMediaController: SystemMediaController? = null
         private var sharedDesktopLyricsOverlay: DesktopLyricsOverlayController? = null
+        @Volatile
+        private var sharedAppInForeground = false
         private var sharedCurrentTrack = TrackMetadata()
         private var sharedPlayerVolume = 0.7f
         private var sharedUserPaused = false
@@ -1076,6 +1136,27 @@ class MainActivity : FlutterActivity() {
         @Volatile
         private var sharedAudioSpectrumEnabled = false
         private val mainThreadHandler = Handler(Looper.getMainLooper())
+        private val mediaSessionCallbacks = object : SystemMediaController.Callbacks {
+            override fun onPlay() = dispatchMediaAction(SystemMediaController.ACTION_PLAY)
+
+            override fun onPause() = dispatchMediaAction(SystemMediaController.ACTION_PAUSE)
+
+            override fun onPrevious() =
+                dispatchMediaAction(SystemMediaController.ACTION_PREVIOUS)
+
+            override fun onNext() = dispatchMediaAction(SystemMediaController.ACTION_NEXT)
+
+            override fun onSeekTo(positionMs: Long) {
+                activeActivity?.get()?.handleSystemMediaSeek(positionMs)
+            }
+
+            override fun onCoverColor(songId: String, coverUrl: String, color: Int) {
+                dispatchFlutterCommand(
+                    "coverColorChanged",
+                    mapOf("songId" to songId, "coverUrl" to coverUrl, "color" to color)
+                )
+            }
+        }
         private var sharedSpectrumClockScheduled = false
         private val spectrumClockRunnable = object : Runnable {
             override fun run() {
@@ -1101,7 +1182,28 @@ class MainActivity : FlutterActivity() {
         private var activeActivity: WeakReference<MainActivity>? = null
 
         fun dispatchMediaAction(action: String) {
-            activeActivity?.get()?.handleSystemMediaAction(action)
+            when (action) {
+                SystemMediaController.ACTION_PREVIOUS -> {
+                    MediaTransportGate.recordTransportCommand()
+                    dispatchFlutterCommand("previous")
+                }
+                SystemMediaController.ACTION_NEXT -> {
+                    MediaTransportGate.recordTransportCommand()
+                    dispatchFlutterCommand("next")
+                }
+                else -> activeActivity?.get()?.handleSystemMediaAction(action)
+            }
+        }
+
+        private fun dispatchFlutterCommand(
+            action: String,
+            arguments: Map<String, Any> = emptyMap()
+        ) {
+            val payload = HashMap<String, Any>(arguments)
+            payload["action"] = action
+            mainThreadHandler.post {
+                sharedNativeChannel?.invokeMethod("systemMediaCommand", payload)
+            }
         }
     }
 }

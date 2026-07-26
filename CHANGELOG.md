@@ -8,6 +8,45 @@ All notable public changes to EmoC will be documented in this file.
 
 Public versions should match the version in `pubspec.yaml`.
 
+## [1.0.7] - 2026-07-26
+
+### 修复 / Fixed
+
+- 修复歌曲自然播放结束或应用处于后台时，系统播放状态可能短暂丢失并中断续播的问题。
+  Fixed transient system playback-state loss and interrupted queue advancement after a track ended or while the app was backgrounded.
+- 修复网易云与 Apple Music 播放器样式切歌时，同一歌曲的高清封面二次返回会重复触发覆盖动画的问题。
+  Fixed duplicate artwork-cover transitions when a higher-resolution image for the same track arrived asynchronously.
+- 修复部分手机和平板横竖屏布局中的标题、歌词、封面和播放控件定位问题。
+  Fixed title, lyrics, artwork, and playback-control positioning across phone and tablet orientations.
+
+### 优化 / Improved
+
+- 封面切换改为按歌曲身份合并异步更新，仅真实切歌时播放一次有方向的覆盖动画。
+  Coalesced asynchronous artwork refinements by track identity so the directional cover animation runs exactly once per actual track change.
+- 增强后台媒体会话、通知播放状态和播放列表续播之间的同步。
+  Improved synchronization among background media sessions, notification playback state, and queue continuation.
+- 优化三种歌词播放器样式的切换、记忆与多尺寸屏幕适配。
+  Improved switching, persistence, and responsive layout behavior for all three lyrics-player styles.
+
+### 验证 / Verification
+
+- Dart 静态分析、Flutter 自动化测试和 Android Release APK 构建通过。
+  Dart analysis, Flutter automated tests, and the Android release APK build passed.
+
+## [1.0.6] - 2026-07-23
+
+### 修复 / Fixed
+
+- 修复应用位于后台时，通过系统媒体控件切换上一首或下一首可能短暂唤起应用界面的问题。
+  Fixed an issue where previous/next actions from system media controls could briefly foreground the app.
+
+### 优化 / Improved
+
+- 将系统媒体会话与通知广播的切歌命令改为进程级路由，直接投递至现有 Flutter 引擎，不再经过 `MainActivity` 生命周期。
+  Routed media-session and notification previous/next commands directly to the existing Flutter engine without passing through the `MainActivity` lifecycle.
+- 保留用户主动点击系统播放卡片时打开应用的行为，并将其与媒体控制动作保持隔离。
+  Preserved explicit app opening from the system media card while keeping it isolated from transport actions.
+
 ## [1.0.5] - 2026-07-22
 
 ### 新增 / Added

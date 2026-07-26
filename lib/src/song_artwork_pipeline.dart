@@ -192,7 +192,15 @@ class SongViewportController extends ChangeNotifier {
       _sourceShowsCovers = showsCovers;
       _songs = songs.toList(growable: false);
       _generation += 1;
-      final restoredReadyCount = initialReadyCount
+      // A stale low high-water mark (for example, two rows captured while a
+      // playlist was still loading) must not collapse a populated playlist on
+      // the next refresh. Restore at least one complete viewport batch while
+      // preserving larger positions reached by the user.
+      final normalizedInitialReadyCount =
+          initialReadyCount > 0 && initialReadyCount < batchSize
+          ? batchSize
+          : initialReadyCount;
+      final restoredReadyCount = normalizedInitialReadyCount
           .clamp(0, _songs.length)
           .toInt();
       // Keep several viewport lengths ahead so a normal fling reaches rows

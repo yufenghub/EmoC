@@ -91,6 +91,44 @@ class NativeBridge {
     return _nativeChannel.invokeMethod('cookiesClear');
   }
 
+  static Future<Map<String, dynamic>> getAppVersion() async {
+    final result = await _nativeChannel.invokeMapMethod<String, dynamic>(
+      'getAppVersion',
+    );
+    return result ?? const <String, dynamic>{};
+  }
+
+  static Future<Map<String, dynamic>> getDownloadedUpdate() async {
+    final result = await _nativeChannel.invokeMapMethod<String, dynamic>(
+      'getDownloadedUpdate',
+    );
+    return result ?? const <String, dynamic>{};
+  }
+
+  static Future<Map<String, dynamic>> checkLatestRelease() async {
+    final result = await _nativeChannel.invokeMapMethod<String, dynamic>(
+      'checkLatestRelease',
+    );
+    return result ?? const <String, dynamic>{};
+  }
+
+  static Future<Map<String, dynamic>> downloadUpdate(
+    Map<String, dynamic> release,
+  ) async {
+    final result = await _nativeChannel.invokeMapMethod<String, dynamic>(
+      'downloadUpdate',
+      release,
+    );
+    return result ?? const <String, dynamic>{};
+  }
+
+  static Future<Map<String, dynamic>> installDownloadedUpdate() async {
+    final result = await _nativeChannel.invokeMapMethod<String, dynamic>(
+      'installDownloadedUpdate',
+    );
+    return result ?? const <String, dynamic>{};
+  }
+
   static Future<void> pausePlayer() {
     return _nativeChannel.invokeMethod('pause');
   }

@@ -41,6 +41,7 @@ class AppModel extends ChangeNotifier {
   final SmsLoginApiClient _smsLoginApiClient = SmsLoginApiClient();
   final MusicMutationApiClient _musicMutationApiClient =
       MusicMutationApiClient();
+  final AppUpdateManager updates = AppUpdateManager();
 
   bool ready = false;
   String themeMode = 'system';
@@ -120,6 +121,8 @@ class AppModel extends ChangeNotifier {
   SongDetail? songDetail;
   MirrorItem? selectedLibraryPlaylist;
   int currentSongIndex = -1;
+  String _artworkTransitionSongIdentity = '';
+  int _artworkTransitionDirection = 1;
   bool _modeSwitching = false;
   bool _restoreLoginOnLoad = false;
   bool _trustSavedLogin = false;
@@ -446,6 +449,7 @@ class AppModel extends ChangeNotifier {
     }
     ready = true;
     notifyListeners();
+    unawaited(updates.initialize());
     await Future<void>.delayed(const Duration(milliseconds: 700));
     final controller = await _ensureWebController();
     await controller?.loadRequest(Uri.parse('https://music.163.com/'));
@@ -456,6 +460,7 @@ class AppModel extends ChangeNotifier {
 
   @override
   void dispose() {
+    updates.dispose();
     _smsLoginApiClient.dispose();
     _loginTimer?.cancel();
     _playerTimer?.cancel();
@@ -1259,6 +1264,15 @@ class AppModel extends ChangeNotifier {
   }
 
   bool isSongArtworkReady(MirrorItem song) => _artworkPipeline.isReady(song);
+
+  int artworkTransitionDirectionFor(MirrorItem song) {
+    final identity = song.id.isNotEmpty
+        ? song.id
+        : '${song.title}|${song.subtitle}';
+    return identity == _artworkTransitionSongIdentity
+        ? _artworkTransitionDirection
+        : 1;
+  }
 
   Future<bool> prepareSongArtwork(
     MirrorItem song, {
@@ -3083,6 +3097,10 @@ class AppModel extends ChangeNotifier {
     bool resetSkipGuard = false,
   }) async {
     final requestId = ++_playRequestId;
+    _artworkTransitionSongIdentity = song.id.isNotEmpty
+        ? song.id
+        : '${song.title}|${song.subtitle}';
+    _artworkTransitionDirection = skipDirection < 0 ? -1 : 1;
     final requestPlaylist = fromList != null && fromList.isNotEmpty
         ? fromList
         : currentPlaylist;
@@ -3419,6 +3437,7 @@ class AppModel extends ChangeNotifier {
     String action,
     Map<String, dynamic> arguments,
   ) async {
+    if (updates.handleNativeEvent(action, arguments)) return;
     if (action == 'coverColorChanged') {
       if (!dynamicColorEnabled) return;
       final songId = _stringOf(arguments['songId']);
@@ -4020,7 +4039,11 @@ class AppModel extends ChangeNotifier {
     notifyListeners();
     try {
       if (playlist.kind == 'liked') {
-        await _musicMutationApiClient.setSongLiked(songId, true);
+        await _musicMutationApiClient.setSongLiked(
+          songId,
+          true,
+          likedPlaylistId: playlist.id,
+        );
       } else {
         await _musicMutationApiClient.addSongToPlaylist(playlist.id, songId);
       }
@@ -4049,10 +4072,14 @@ class AppModel extends ChangeNotifier {
     status = '正在添加到我喜欢的音乐';
     notifyListeners();
     try {
-      await _musicMutationApiClient.setSongLiked(songId, true);
       final likedPlaylists = libraryPlaylists
           .where((item) => item.kind == 'liked')
           .toList(growable: false);
+      await _musicMutationApiClient.setSongLiked(
+        songId,
+        true,
+        likedPlaylistId: likedPlaylists.isEmpty ? '' : likedPlaylists.first.id,
+      );
       if (likedPlaylists.isNotEmpty) {
         await _invalidatePlaylistSongsCache(likedPlaylists.first.id);
       }
@@ -5394,7 +5421,11 @@ class AppModel extends ChangeNotifier {
     notifyListeners();
     try {
       if (playlist.kind == 'liked') {
-        await _musicMutationApiClient.setSongLiked(song.id, false);
+        await _musicMutationApiClient.setSongLiked(
+          song.id,
+          false,
+          likedPlaylistId: playlist.id,
+        );
       } else {
         await _musicMutationApiClient.removeSongFromPlaylist(
           playlist.id,

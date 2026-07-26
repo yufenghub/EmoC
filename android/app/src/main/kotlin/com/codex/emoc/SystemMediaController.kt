@@ -411,14 +411,9 @@ class SystemMediaController(
     }
 
     private fun contentIntent(): PendingIntent {
-        val intent = Intent(context, MainActivity::class.java)
+        val intent = Intent(context, MediaNotificationOpenReceiver::class.java)
             .setAction(ACTION_OPEN_PLAYER)
-            .addFlags(
-                Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                    Intent.FLAG_ACTIVITY_SINGLE_TOP
-            )
-        return PendingIntent.getActivity(
+        return PendingIntent.getBroadcast(
             context,
             OPEN_PLAYER_REQUEST_CODE,
             intent,

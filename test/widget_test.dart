@@ -38,6 +38,40 @@ void main() {
     expect(requests.last.data['pid'], 987654321);
   });
 
+  test('liked songs fall back across playlist and radio endpoints', () async {
+    final encryptedRequests =
+        <
+          ({String path, Map<String, dynamic> data, Map<String, String> query})
+        >[];
+    final plainRequests =
+        <({String path, Map<String, dynamic> data, bool useGet})>[];
+    final client = MusicMutationApiClient(
+      encryptedRequestOverride: (path, data, {required queryParameters}) async {
+        encryptedRequests.add((path: path, data: data, query: queryParameters));
+        throw const MusicApiException('try the next endpoint');
+      },
+      plainRequestOverride: (path, data, {required useGet}) async {
+        plainRequests.add((path: path, data: data, useGet: useGet));
+        return {'code': 200};
+      },
+    );
+
+    await client.setSongLiked('123', true, likedPlaylistId: '456');
+
+    expect(encryptedRequests.map((request) => request.path), [
+      '/weapi/playlist/manipulate/tracks',
+      '/weapi/radio/like',
+    ]);
+    expect(encryptedRequests.first.data['op'], 'add');
+    expect(encryptedRequests.first.data['pid'], 456);
+    expect(encryptedRequests.first.data['trackIds'], '[123]');
+    expect(encryptedRequests.last.data['time'], '3');
+    expect(encryptedRequests.last.query['time'], '3');
+    expect(plainRequests, hasLength(1));
+    expect(plainRequests.single.path, '/api/radio/like');
+    expect(plainRequests.single.useGet, isFalse);
+  });
+
   testWidgets('renders the main shell before login probing', (tester) async {
     final model = AppModel()..showSongCovers = false;
     addTearDown(model.dispose);
@@ -259,6 +293,36 @@ void main() {
     await tester.pump();
     expect(viewport.readyCount, 108);
     await tester.pump(const Duration(milliseconds: 400));
+  });
+
+  testWidgets('playlist viewport never restores below its first batch', (
+    tester,
+  ) async {
+    final model = _SlowArtworkModel()..showSongCovers = true;
+    final viewport = SongViewportController(
+      batchSize: 36,
+      eager: true,
+      automaticBatchCount: 2,
+    );
+    addTearDown(model.dispose);
+    addTearDown(viewport.dispose);
+    final songs = List<MirrorItem>.generate(
+      90,
+      (index) => MirrorItem(
+        domId: 'liked_$index',
+        kind: 'song',
+        title: 'Liked $index',
+        subtitle: 'Artist',
+        imageUrl: 'https://invalid.example/liked_$index.jpg',
+        href: 'https://music.163.com/#/song?id=${index + 2000}',
+      ),
+    );
+
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+    viewport.synchronize(model, songs, initialReadyCount: 2);
+    await tester.pump();
+
+    expect(viewport.readyCount, viewport.batchSize);
   });
 
   test('forced playlist colour refresh reuses the in-flight request', () {

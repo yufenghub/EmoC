@@ -730,7 +730,6 @@ void _confirmClearCache(BuildContext context, AppModel model) {
 }
 
 const _projectUrl = 'https://github.com/yufenghub/EmoC';
-const _appVersionLabel = '1.0.4';
 
 void _openAboutSheet(BuildContext context, AppModel model) {
   showModalBottomSheet<void>(
@@ -772,11 +771,44 @@ void _openAboutSheet(BuildContext context, AppModel model) {
                 style: theme.textTheme.bodyMedium,
               ),
               const SizedBox(height: 16),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.info_outline),
-                title: const Text('版本'),
-                subtitle: const Text(_appVersionLabel),
+              AnimatedBuilder(
+                animation: model.updates,
+                builder: (context, _) {
+                  final update = model.updates;
+                  return ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.info_outline),
+                    title: const Text('版本'),
+                    subtitle: Text(update.currentVersionName),
+                    trailing: update.phase == AppUpdatePhase.downloading
+                        ? SizedBox(
+                            width: 72,
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                LinearProgressIndicator(
+                                  value: update.totalBytes > 0
+                                      ? update.downloadProgress
+                                      : null,
+                                ),
+                                const SizedBox(height: 4),
+                                Text(update.versionActionLabel),
+                              ],
+                            ),
+                          )
+                        : TextButton(
+                            onPressed: update.isBusy
+                                ? null
+                                : () => unawaited(
+                                    showAppUpdateDialog(context, model),
+                                  ),
+                            child: Text(update.versionActionLabel),
+                          ),
+                    onTap: update.isBusy
+                        ? null
+                        : () => unawaited(showAppUpdateDialog(context, model)),
+                  );
+                },
               ),
               ListTile(
                 contentPadding: EdgeInsets.zero,

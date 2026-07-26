@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE"/>
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
     <application
         android:label="EmoC"
         android:name="${applicationName}"
@@ -37,11 +38,23 @@
         <receiver
             android:name=".MediaActionReceiver"
             android:exported="false" />
+        <receiver
+            android:name=".MediaNotificationOpenReceiver"
+            android:exported="false" />
         <service
             android:name=".PlaybackKeepAliveService"
             android:exported="false"
             android:stopWithTask="false"
             android:foregroundServiceType="mediaPlayback" />
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
