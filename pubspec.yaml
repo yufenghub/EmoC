@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.8+9
+version: 1.0.12+13
 
 environment:
   sdk: ^3.12.2
@@ -40,6 +40,7 @@ dependencies:
   pointycastle: ^3.9.1
   webview_flutter: ^4.10.0
   webview_flutter_android: ^4.13.0
+  liquid_glass_widgets: 1.7.2
 
 dev_dependencies:
   flutter_test:
@@ -62,6 +63,12 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+  shaders:
+    - shaders/album_flow.frag
+  assets:
+    - third_party/lyricify-backgrounds/LICENSE.txt
+    - third_party/lyricify-backgrounds/NOTICE.txt
+    - third_party/liquid-glass-widgets/THIRD_PARTY_NOTICES.txt
 
   # To add assets to your application, add an assets section, like this:
   # assets:

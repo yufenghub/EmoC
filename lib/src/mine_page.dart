@@ -7,10 +7,11 @@ class MinePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final showLabels = model.regionTextVisible('settings.labels');
     return PageFrame(
       title: '我的',
       children: [
-        const SettingsSectionTitle(title: '账号'),
+        const SettingsSectionTitle(title: '账号', icon: Icons.person_outline),
         AccountCard(model: model),
         const SizedBox(height: 10),
         SettingsTile(
@@ -26,12 +27,16 @@ class MinePage extends StatelessWidget {
                       ? model.startFreshLogin()
                       : model.openLoginGate(),
                 ),
-                child: Text(model.accountActive ? '重登' : '登录'),
+                child: showLabels
+                    ? Text(model.accountActive ? '重登' : '登录')
+                    : const Icon(Icons.login),
               ),
               if (model.accountActive)
                 OutlinedButton(
                   onPressed: () => unawaited(model.logout()),
-                  child: const Text('退出'),
+                  child: showLabels
+                      ? const Text('退出')
+                      : const Icon(Icons.logout),
                 ),
             ],
           ),
@@ -45,16 +50,95 @@ class MinePage extends StatelessWidget {
             onChanged: (value) => unawaited(model.setRememberLogin(value)),
           ),
         ),
-        const SettingsSectionTitle(title: '界面'),
+        const SettingsSectionTitle(title: '界面', icon: Icons.tune_outlined),
         ThemeModeSettingsTile(model: model),
+        const SizedBox(height: 10),
+        AppCardSurface(
+          model: model,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.wallpaper_outlined),
+                    SizedBox(width: 14),
+                    Text('背景主题', style: TextStyle(fontWeight: FontWeight.w800)),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                SegmentedButton<bool>(
+                  segments: const [
+                    ButtonSegment(value: false, label: Text('亮暗优先')),
+                    ButtonSegment(value: true, label: Text('封面优先')),
+                  ],
+                  selected: {model.coverFirstBackground},
+                  showSelectedIcon: false,
+                  onSelectionChanged: (value) =>
+                      model.setCoverFirstBackground(value.first),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        AppearanceSettingsTile(model: model),
+        SettingsTile(
+          icon: Icons.view_agenda_outlined,
+          title: '卡片样式',
+          subtitle: model.cardStyle == 'outline' ? '镂空' : '实心',
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => openAppPage<void>(context, CardStylePage(model: model)),
+        ),
+        const SizedBox(height: 10),
+        SettingsTile(
+          icon: Icons.border_clear,
+          title: '卡片边框',
+          trailing: Switch(
+            value: model.cardFrameEnabled,
+            onChanged: (value) => model.setCardFrameEnabled(value),
+          ),
+        ),
+        const SizedBox(height: 10),
+        SettingsTile(
+          icon: Icons.space_dashboard_outlined,
+          title: '无字模式',
+          trailing: Wrap(
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 8,
+            children: [
+              IconButton(
+                tooltip: '无字模式自定义',
+                onPressed: () => openInterfaceSettings(context, model),
+                icon: const Icon(Icons.tune),
+              ),
+              Switch(
+                value: model.iconOnlyNavigation,
+                onChanged: (value) => model.setIconOnlyNavigation(value),
+              ),
+            ],
+          ),
+        ),
         const SizedBox(height: 10),
         SettingsTile(
           icon: Icons.palette_outlined,
           title: '动态取色',
-          trailing: Switch(
-            value: model.dynamicColorEnabled,
-            onChanged: (value) =>
-                unawaited(model.setDynamicColorEnabled(value)),
+          trailing: Wrap(
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 8,
+            children: [
+              IconButton(
+                tooltip: '颜色自定义',
+                onPressed: () => openUiColorSettings(context, model),
+                icon: const Icon(Icons.tune),
+              ),
+              Switch(
+                value: model.dynamicColorEnabled,
+                onChanged: (value) =>
+                    unawaited(model.setDynamicColorEnabled(value)),
+              ),
+            ],
           ),
         ),
         const SizedBox(height: 10),
@@ -66,8 +150,38 @@ class MinePage extends StatelessWidget {
             onChanged: (value) => unawaited(model.setShowSongCovers(value)),
           ),
         ),
-        const SettingsSectionTitle(title: '播放'),
-        AudioQualitySettingsTile(model: model),
+        const SettingsSectionTitle(
+          title: '播放',
+          icon: Icons.play_circle_outline,
+        ),
+        SettingsTile(
+          icon: Icons.network_check,
+          title: '网络与音质',
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => openAppPage<void>(
+            context,
+            NetworkPolicyPage(policy: model.networkPolicy),
+          ),
+        ),
+        const SizedBox(height: 10),
+        PlaybackTransitionSettings(model: model),
+        const SizedBox(height: 10),
+        SettingsTile(
+          icon: Icons.tune,
+          title: '自定义均衡器',
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => openAppPage<void>(context, EqualizerPage(model: model)),
+        ),
+        const SizedBox(height: 10),
+        SettingsTile(
+          icon: Icons.equalizer,
+          title: '音量均衡',
+          trailing: Switch(
+            value: model.volumeNormalizationEnabled,
+            onChanged: (value) =>
+                unawaited(model.setVolumeNormalization(value)),
+          ),
+        ),
         const SizedBox(height: 10),
         SettingsTile(
           icon: Icons.queue_play_next_outlined,
@@ -85,7 +199,7 @@ class MinePage extends StatelessWidget {
             spacing: 8,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              IconButton.filledTonal(
+              IconButton(
                 tooltip: '桌面歌词设置',
                 onPressed: () => _openDesktopLyricsSheet(context, model),
                 icon: const Icon(Icons.tune),
@@ -98,11 +212,19 @@ class MinePage extends StatelessWidget {
             ],
           ),
         ),
-        const SettingsSectionTitle(title: '数据'),
+        const SettingsSectionTitle(title: '数据', icon: Icons.storage_outlined),
+        SettingsTile(
+          icon: Icons.history,
+          title: '最近播放',
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () =>
+              openAppPage<void>(context, ListeningHistoryPage(model: model)),
+        ),
+        const SizedBox(height: 10),
         SettingsTile(
           icon: Icons.sync,
           title: '刷新内容',
-          trailing: IconButton.filledTonal(
+          trailing: IconButton(
             onPressed: model.syncHomeAndLibrary,
             icon: const Icon(Icons.refresh),
           ),
@@ -110,18 +232,16 @@ class MinePage extends StatelessWidget {
         const SizedBox(height: 10),
         SettingsTile(
           icon: Icons.cleaning_services_outlined,
-          title: '清除缓存',
-          trailing: IconButton.filledTonal(
-            tooltip: '清除缓存',
-            onPressed: () => _confirmClearCache(context, model),
-            icon: const Icon(Icons.delete_sweep_outlined),
-          ),
+          title: '缓存管理',
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () =>
+              openAppPage<void>(context, CacheManagementPage(model: model)),
         ),
-        const SettingsSectionTitle(title: '关于'),
+        const SettingsSectionTitle(title: '关于', icon: Icons.info_outline),
         SettingsTile(
           icon: Icons.info_outline,
           title: '关于 EmoC',
-          trailing: IconButton.filledTonal(
+          trailing: IconButton(
             tooltip: '软件信息',
             onPressed: () => _openAboutSheet(context, model),
             icon: const Icon(Icons.chevron_right),
@@ -568,64 +688,65 @@ class ThemeModeSettingsTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: theme.cardTheme.color,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.contrast, color: theme.colorScheme.primary),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      '界面主题',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontWeight: FontWeight.w800),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: SegmentedButton<String>(
-              segments: const [
-                ButtonSegment(
-                  value: 'system',
-                  icon: Icon(Icons.phone_android),
-                  label: Text('系统'),
-                ),
-                ButtonSegment(
-                  value: 'light',
-                  icon: Icon(Icons.light_mode_outlined),
-                  label: Text('浅色'),
-                ),
-                ButtonSegment(
-                  value: 'dark',
-                  icon: Icon(Icons.dark_mode_outlined),
-                  label: Text('深色'),
+    final showLabels = model.regionTextVisible('settings.labels');
+    return AppCardSurface(
+      model: model,
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.contrast, color: theme.colorScheme.primary),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (showLabels)
+                        const Text(
+                          '界面主题',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                    ],
+                  ),
                 ),
               ],
-              selected: {model.themeMode},
-              showSelectedIcon: false,
-              onSelectionChanged: (next) {
-                if (next.isEmpty) return;
-                unawaited(model.setThemeMode(next.first));
-              },
             ),
-          ),
-        ],
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: SegmentedButton<String>(
+                segments: [
+                  ButtonSegment(
+                    value: 'system',
+                    icon: const Icon(Icons.phone_android),
+                    label: showLabels ? const Text('系统') : null,
+                  ),
+                  ButtonSegment(
+                    value: 'light',
+                    icon: const Icon(Icons.light_mode_outlined),
+                    label: showLabels ? const Text('浅色') : null,
+                  ),
+                  ButtonSegment(
+                    value: 'dark',
+                    icon: const Icon(Icons.dark_mode_outlined),
+                    label: showLabels ? const Text('深色') : null,
+                  ),
+                ],
+                selected: {model.themeMode},
+                showSelectedIcon: false,
+                onSelectionChanged: (next) {
+                  if (next.isEmpty) return;
+                  unawaited(model.setThemeMode(next.first));
+                },
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -703,29 +824,6 @@ void _openAudioQualitySheet(BuildContext context, AppModel model) {
         ),
       );
     },
-  );
-}
-
-void _confirmClearCache(BuildContext context, AppModel model) {
-  showDialog<void>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: const Text('清除缓存'),
-      content: const Text('将清除首页、歌单、播放卡片和播放列表缓存，不会退出账号。'),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          onPressed: () {
-            Navigator.of(context).pop();
-            unawaited(model.clearCache());
-          },
-          child: const Text('清除'),
-        ),
-      ],
-    ),
   );
 }
 
@@ -834,6 +932,14 @@ void _openAboutSheet(BuildContext context, AppModel model) {
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => _openDisclaimerDialog(context),
               ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.code),
+                title: const Text('开源许可'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () =>
+                    showLicensePage(context: context, applicationName: 'EmoC'),
+              ),
             ],
           ),
         ),
@@ -890,21 +996,35 @@ void _openDisclaimerDialog(BuildContext context) {
 }
 
 class SettingsSectionTitle extends StatelessWidget {
-  const SettingsSectionTitle({required this.title, super.key});
+  const SettingsSectionTitle({
+    required this.title,
+    required this.icon,
+    super.key,
+  });
 
   final String title;
+  final IconData icon;
 
   @override
   Widget build(BuildContext context) {
+    if (!AppScope.of(context).regionTextVisible('settings.sections')) {
+      return const SizedBox(height: 20);
+    }
     final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.fromLTRB(2, 14, 2, 8),
-      child: Text(
-        title,
-        style: theme.textTheme.titleSmall?.copyWith(
-          color: theme.colorScheme.primary,
-          fontWeight: FontWeight.w900,
-        ),
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: theme.colorScheme.primary),
+          const SizedBox(width: 8),
+          Text(
+            title,
+            style: theme.textTheme.titleSmall?.copyWith(
+              color: theme.colorScheme.primary,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -918,37 +1038,75 @@ class AccountCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: theme.cardTheme.color,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  model.visibleAccountName,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w900,
+    final showLabels = model.regionTextVisible('settings.labels');
+    return AppCardSurface(
+      model: model,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            ClipOval(
+              child: SizedBox.square(
+                dimension: 52,
+                child: ColoredBox(
+                  color: theme.colorScheme.surfaceContainerHighest,
+                  child: CoverImage(
+                    url: model.avatarUrl,
+                    identity: model.avatarUrl,
+                    fallbackIcon: Icons.person_outline,
                   ),
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  model.accountActive ? '账号已登录' : '未登录',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
+              ),
             ),
-          ),
-        ],
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (showLabels)
+                    Text(
+                      model.visibleAccountName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  if (showLabels && model.accountActive && model.accountVip)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 4),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.workspace_premium,
+                            size: 18,
+                            color: Color(0xFFB88618),
+                          ),
+                          SizedBox(width: 4),
+                          Text(
+                            'VIP',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFFB88618),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  if (showLabels) const SizedBox(height: 4),
+                  if (showLabels)
+                    Text(
+                      model.accountActive ? '账号已登录' : '未登录',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -43,7 +43,13 @@ android {
     }
 
     buildTypes {
+        debug {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+            manifestPlaceholders["appLabel"] = "EmoC Debug"
+        }
         release {
+            manifestPlaceholders["appLabel"] = "EmoC"
             if (hasReleaseKeystore) {
                 signingConfig = signingConfigs.getByName("release")
             }

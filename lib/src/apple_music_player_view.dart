@@ -59,16 +59,16 @@ class _AppleMusicPlayerViewState extends State<AppleMusicPlayerView> {
       if (candidate.startsWith('http')) {
         return _highResolutionArtworkUrl(candidate);
       }
+      if (candidate.startsWith('file:')) return candidate;
     }
     return '';
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     return ColoredBox(
       key: const ValueKey('apple-player-background'),
-      color: theme.colorScheme.surface,
+      color: Colors.transparent,
       child: LayoutBuilder(
         builder: (context, constraints) {
           final landscape = constraints.maxWidth > constraints.maxHeight * 1.18;
@@ -168,30 +168,17 @@ class _ApplePortraitPlayer extends StatelessWidget {
               ),
               const SizedBox(height: 12),
               Expanded(
-                child: LayoutBuilder(
-                  builder: (context, infoConstraints) {
-                    final lyricFontScale = isTablet ? 1.42 : 1.06;
-                    final baseFontSize =
-                        Theme.of(context).textTheme.titleMedium?.fontSize ?? 16;
-                    final rowExtent = max(
-                      32.0,
-                      baseFontSize * lyricFontScale * 1.62,
-                    );
-                    final lyricLineCount =
-                        ((infoConstraints.maxHeight - 52) / rowExtent)
-                            .floor()
-                            .clamp(1, isTablet ? 16 : 9)
-                            .toInt();
-                    return _AppleTrackInformation(
-                      player: player,
-                      song: song,
-                      lyrics: lyrics,
-                      lyricsLoading: lyricsLoading,
-                      centered: false,
-                      lyricFontScale: lyricFontScale,
-                      lyricLineCount: lyricLineCount,
-                    );
-                  },
+                child: _AppleTrackInformation(
+                  model: model,
+                  player: player,
+                  song: song,
+                  lyrics: lyrics,
+                  lyricsLoading: lyricsLoading,
+                  centered: false,
+                  lyricFontScale: _responsiveLyricsFontScale(
+                    MediaQuery.sizeOf(context),
+                    base: 1.06,
+                  ),
                 ),
               ),
               const SizedBox(height: 5),
@@ -235,10 +222,16 @@ class _AppleLandscapePlayer extends StatelessWidget {
           140.0,
           constraints.maxHeight - verticalPadding * 2,
         );
+        final columnGap = isTablet ? 22.0 : 26.0;
         final artworkSize = min(
-          constraints.maxWidth * (isTablet ? 0.40 : 0.43),
+          (constraints.maxWidth - horizontalPadding * 2 - columnGap) * 9 / 20,
           contentHeight,
-        ).clamp(140.0, isTablet ? 560.0 : 460.0).toDouble();
+        ).clamp(80.0, isTablet ? 560.0 : 460.0).toDouble();
+        final textScale = MediaQuery.textScalerOf(context).scale(16) / 16;
+        final panelHeight = max(
+          artworkSize,
+          min(contentHeight, 176 * textScale),
+        );
         return Padding(
           padding: EdgeInsets.symmetric(
             horizontal: horizontalPadding,
@@ -261,44 +254,28 @@ class _AppleLandscapePlayer extends StatelessWidget {
                   ),
                 ),
               ),
-              SizedBox(width: isTablet ? 22 : 26),
+              SizedBox(width: columnGap),
               Expanded(
                 flex: 11,
                 child: Align(
                   alignment: Alignment.center,
                   child: SizedBox(
-                    height: artworkSize,
+                    height: panelHeight,
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Expanded(
-                          child: LayoutBuilder(
-                            builder: (context, infoConstraints) {
-                              final lyricFontScale = isTablet ? 1.40 : 1.18;
-                              final baseFontSize =
-                                  Theme.of(
-                                    context,
-                                  ).textTheme.titleMedium?.fontSize ??
-                                  16;
-                              final rowExtent = max(
-                                32.0,
-                                baseFontSize * lyricFontScale * 1.62,
-                              );
-                              final lyricLineCount =
-                                  ((infoConstraints.maxHeight - 50) / rowExtent)
-                                      .floor()
-                                      .clamp(1, isTablet ? 16 : 10)
-                                      .toInt();
-                              return _AppleTrackInformation(
-                                player: player,
-                                song: song,
-                                lyrics: lyrics,
-                                lyricsLoading: lyricsLoading,
-                                centered: false,
-                                lyricFontScale: lyricFontScale,
-                                lyricLineCount: lyricLineCount,
-                              );
-                            },
+                          child: _AppleTrackInformation(
+                            model: model,
+                            player: player,
+                            song: song,
+                            lyrics: lyrics,
+                            lyricsLoading: lyricsLoading,
+                            centered: false,
+                            lyricFontScale: _responsiveLyricsFontScale(
+                              MediaQuery.sizeOf(context),
+                              base: 1.18,
+                            ),
                           ),
                         ),
                         const SizedBox(height: 6),
@@ -340,84 +317,96 @@ class _AppleArtwork extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return SizedBox.square(
-      dimension: size,
-      child: Stack(
-        fit: StackFit.expand,
-        clipBehavior: Clip.none,
-        children: [
-          AnimatedScale(
-            scale: playing ? 1 : 0.965,
-            duration: const Duration(milliseconds: 420),
-            curve: Curves.easeOutCubic,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 320),
-              curve: Curves.easeOutCubic,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(14),
-                boxShadow: [
-                  BoxShadow(
-                    color: colors.shadow.withValues(
-                      alpha: playing ? 0.2 : 0.13,
-                    ),
-                    blurRadius: playing ? 28 : 20,
-                    offset: Offset(0, playing ? 14 : 9),
-                  ),
-                ],
-              ),
-              clipBehavior: Clip.antiAlias,
-              child: _SlidingCoverSwitcher(
-                identityKey: songIdentity,
-                transitionKey: '$songIdentity|$coverUrl|$showCover',
-                coverUrl: coverUrl,
-                showCover: showCover,
-                direction: transitionDirection,
-                preferredSize: 800,
-                decodeSize: 512,
-                child: showCover
-                    ? CoverImage(
-                        url: coverUrl,
-                        identity: songIdentity,
-                        fallbackIcon: Icons.album_outlined,
-                        preferredSize: 800,
-                        decodeSize: 512,
-                      )
-                    : ColoredBox(
-                        color: colors.surfaceContainerHighest,
-                        child: Icon(Icons.album_outlined, size: size * 0.28),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final extent = min(
+          size,
+          min(constraints.maxWidth, constraints.maxHeight),
+        );
+        return SizedBox.square(
+          key: const ValueKey('apple-artwork-square'),
+          dimension: extent,
+          child: Stack(
+            fit: StackFit.expand,
+            clipBehavior: Clip.none,
+            children: [
+              AnimatedScale(
+                scale: playing ? 1 : 0.965,
+                duration: const Duration(milliseconds: 420),
+                curve: Curves.easeOutCubic,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 320),
+                  curve: Curves.easeOutCubic,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(14),
+                    boxShadow: [
+                      BoxShadow(
+                        color: colors.shadow.withValues(
+                          alpha: playing ? 0.2 : 0.13,
+                        ),
+                        blurRadius: playing ? 28 : 20,
+                        offset: Offset(0, playing ? 14 : 9),
                       ),
+                    ],
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: _SlidingCoverSwitcher(
+                    identityKey: songIdentity,
+                    transitionKey: '$songIdentity|$coverUrl|$showCover',
+                    coverUrl: coverUrl,
+                    showCover: showCover,
+                    direction: transitionDirection,
+                    preferredSize: 800,
+                    decodeSize: 512,
+                    child: showCover
+                        ? CoverImage(
+                            url: coverUrl,
+                            identity: songIdentity,
+                            fallbackIcon: Icons.album_outlined,
+                            preferredSize: 800,
+                            decodeSize: 512,
+                          )
+                        : ColoredBox(
+                            color: colors.surfaceContainerHighest,
+                            child: Icon(
+                              Icons.album_outlined,
+                              size: size * 0.28,
+                            ),
+                          ),
+                  ),
+                ),
               ),
-            ),
+              IgnorePointer(
+                child: SizedBox.expand(
+                  key: ValueKey('apple-artwork-$songIdentity'),
+                ),
+              ),
+            ],
           ),
-          IgnorePointer(
-            child: SizedBox.expand(
-              key: ValueKey('apple-artwork-$songIdentity'),
-            ),
-          ),
-        ],
-      ),
+        );
+      },
     );
   }
 }
 
 class _AppleTrackInformation extends StatelessWidget {
   const _AppleTrackInformation({
+    required this.model,
     required this.player,
     required this.song,
     required this.lyrics,
     required this.lyricsLoading,
     required this.centered,
     this.lyricFontScale = 1,
-    this.lyricLineCount = 2,
   });
 
+  final AppModel model;
   final PlayerSnapshot player;
   final MirrorItem song;
   final List<LyricLine> lyrics;
   final bool lyricsLoading;
   final bool centered;
   final double lyricFontScale;
-  final int lyricLineCount;
 
   @override
   Widget build(BuildContext context) {
@@ -460,8 +449,7 @@ class _AppleTrackInformation extends StatelessWidget {
                   loading: lyricsLoading,
                   compact: true,
                   textAlign: textAlign,
-                  fontScale: lyricFontScale,
-                  visibleLineCount: lyricLineCount,
+                  fontScale: lyricFontScale * model.playerLyricsFontScale,
                 ),
               ),
             ],
@@ -478,107 +466,20 @@ class _ApplePlaybackPanel extends StatelessWidget {
     required this.player,
     this.compact = false,
   });
-
   final AppModel model;
   final PlayerSnapshot player;
   final bool compact;
 
   @override
-  Widget build(BuildContext context) {
-    return Column(
-      key: ValueKey(
-        compact ? 'apple-playback-panel-compact' : 'apple-playback-panel-full',
-      ),
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _ExpandedPlayerProgress(model: model, player: player),
-        SizedBox(height: compact ? 4 : 10),
-        _AppleTransportControls(model: model, player: player),
-        SizedBox(height: compact ? 4 : 10),
-        if (!compact) ...[
-          Row(
-            children: [
-              const Icon(Icons.volume_down, size: 20),
-              Expanded(
-                child: Slider(
-                  value: player.volume.clamp(0.0, 1.0),
-                  onChanged: (value) => unawaited(model.setPlayerVolume(value)),
-                ),
-              ),
-              const Icon(Icons.volume_up, size: 20),
-            ],
-          ),
-        ],
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            IconButton(
-              tooltip: '收藏',
-              onPressed: () => _openFavoriteSheet(context, model),
-              icon: const Icon(Icons.favorite_border),
-            ),
-            IconButton(
-              tooltip: _modeLabel(player.mode),
-              onPressed: () => model.playerControl('mode'),
-              icon: Icon(_modeIcon(player.mode)),
-            ),
-            IconButton(
-              tooltip: '播放列表',
-              onPressed: () => _openQueueSheet(context, model),
-              icon: const Icon(Icons.queue_music),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-}
-
-class _AppleTransportControls extends StatelessWidget {
-  const _AppleTransportControls({required this.model, required this.player});
-
-  final AppModel model;
-  final PlayerSnapshot player;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-      children: [
-        IconButton(
-          tooltip: '上一首',
-          iconSize: 34,
-          onPressed: () => model.playerControl('previous'),
-          icon: const Icon(Icons.skip_previous_rounded),
-        ),
-        IconButton.filled(
-          tooltip: player.playing ? '暂停' : '播放',
-          style: IconButton.styleFrom(
-            minimumSize: const Size.square(68),
-            maximumSize: const Size.square(68),
-            backgroundColor: colors.onSurface,
-            foregroundColor: colors.surface,
-          ),
-          onPressed: () => model.playerControl('toggle'),
-          icon: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 180),
-            transitionBuilder: (child, animation) =>
-                ScaleTransition(scale: animation, child: child),
-            child: Icon(
-              player.playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
-              key: ValueKey(player.playing),
-              size: 40,
-            ),
-          ),
-        ),
-        IconButton(
-          tooltip: '下一首',
-          iconSize: 34,
-          onPressed: () => model.playerControl('next'),
-          icon: const Icon(Icons.skip_next_rounded),
-        ),
-      ],
-    );
-  }
+  Widget build(BuildContext context) => Column(
+    key: ValueKey(
+      compact ? 'apple-playback-panel-compact' : 'apple-playback-panel-full',
+    ),
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      _ExpandedPlayerProgress(model: model, player: player),
+      const SizedBox(height: 6),
+      PlayerToolRow(model: model, player: player, centerTransport: true),
+    ],
+  );
 }

@@ -8,7 +8,11 @@ class CoverCacheEntry {
 }
 
 class CoverRuntimeCache extends ChangeNotifier {
-  CoverRuntimeCache._();
+  CoverRuntimeCache._([this._directory]);
+
+  @visibleForTesting
+  factory CoverRuntimeCache.testing(Directory directory) =>
+      CoverRuntimeCache._(directory);
 
   static final CoverRuntimeCache instance = CoverRuntimeCache._();
 
@@ -17,6 +21,16 @@ class CoverRuntimeCache extends ChangeNotifier {
   static const int _maxDownloadBytes = 3 << 20;
   static const int _maxConcurrentDownloads = 6;
   static const int _maxDiskEntries = 500;
+  static const int defaultDiskLimit = 128 << 20;
+  final Directory? _directory;
+  int diskLimitBytes = defaultDiskLimit;
+  int _generation = 0;
+  bool _disposed = false;
+  int _diskBytes = -1;
+  int _diskEntries = 0;
+  Future<void> _diskOperations = Future<void>.value();
+  final Set<HttpClient> _clients = {};
+  bool allowPrefetch = true;
 
   final LinkedHashMap<String, Uint8List> _memory =
       LinkedHashMap<String, Uint8List>();
@@ -26,12 +40,13 @@ class CoverRuntimeCache extends ChangeNotifier {
   final List<Completer<void>> _downloadWaiters = <Completer<void>>[];
   int _memoryBytes = 0;
   int _activeDownloads = 0;
-  int _diskWriteCount = 0;
   Timer? _notifyTimer;
 
-  Directory get _diskDirectory => Directory(
-    '${Directory.systemTemp.path}${Platform.pathSeparator}emoc_cover_cache_v1',
-  );
+  Directory get _diskDirectory =>
+      _directory ??
+      Directory(
+        '${Directory.systemTemp.path}${Platform.pathSeparator}emoc_cover_cache_v1',
+      );
 
   CoverCacheEntry? lookup(Iterable<String> candidates) {
     for (final url in candidates) {
@@ -48,12 +63,17 @@ class CoverRuntimeCache extends ChangeNotifier {
   }
 
   Future<CoverCacheEntry?> load(Iterable<String> candidates) async {
-    final urls = candidates.where((url) => url.startsWith('http')).toList();
+    final generation = _generation;
+    final urls = candidates
+        .where((url) => url.startsWith('http'))
+        .toSet()
+        .toList();
     final cached = lookup(urls);
     if (cached != null) return cached;
     final downloadable = <String>[];
     for (final url in urls) {
       final diskBytes = await _loadFromDisk(url);
+      if (generation != _generation) return null;
       if (diskBytes != null) {
         _store(url, diskBytes);
         return CoverCacheEntry(url: url, bytes: diskBytes);
@@ -67,13 +87,17 @@ class CoverRuntimeCache extends ChangeNotifier {
     }
     if (downloadable.isEmpty) return null;
     final primaryUrl = downloadable.first;
-    final primaryBytes = await _loadOne(primaryUrl);
+    final primaryBytes = await _loadOne(primaryUrl, generation);
+    if (generation != _generation) return null;
     if (primaryBytes != null) {
       return CoverCacheEntry(url: primaryUrl, bytes: primaryBytes);
     }
     for (var start = 1; start < downloadable.length; start += 3) {
       final wave = downloadable.skip(start).take(3).toList(growable: false);
-      final results = await Future.wait(wave.map(_loadOne));
+      final results = await Future.wait(
+        wave.map((url) => _loadOne(url, generation)),
+      );
+      if (generation != _generation) return null;
       for (var index = 0; index < wave.length; index++) {
         final bytes = results[index];
         if (bytes != null) {
@@ -85,6 +109,7 @@ class CoverRuntimeCache extends ChangeNotifier {
   }
 
   Future<void> prefetch(Iterable<String> rawUrls) async {
+    if (!allowPrefetch) return;
     final seen = <String>{};
     final urls = <String>[];
     for (final rawUrl in rawUrls) {
@@ -93,25 +118,37 @@ class CoverRuntimeCache extends ChangeNotifier {
       urls.add(normalized);
     }
     for (var start = 0; start < urls.length; start += 6) {
+      if (!allowPrefetch) return;
       await Future.wait(
         urls.skip(start).take(6).map((url) => load(_coverImageCandidates(url))),
       );
     }
   }
 
-  Future<Uint8List?> _loadOne(String url) {
+  Future<Uint8List?> _loadOne(String url, int generation) {
+    if (generation != _generation) return Future.value();
+    final cached = _memory[url];
+    if (cached != null) return Future.value(cached);
     final existing = _pending[url];
     if (existing != null) return existing;
-    final future = _download(url).whenComplete(() => _pending.remove(url));
+    late final Future<Uint8List?> future;
+    future = _download(url, generation).whenComplete(() {
+      if (identical(_pending[url], future)) _pending.remove(url);
+    });
     _pending[url] = future;
     return future;
   }
 
-  Future<Uint8List?> _download(String url) async {
+  Future<Uint8List?> _download(String url, int generation) async {
     await _acquireDownloadSlot();
+    if (generation != _generation) {
+      _releaseDownloadSlot();
+      return null;
+    }
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 5)
       ..idleTimeout = const Duration(seconds: 5);
+    _clients.add(client);
     try {
       final request = await client
           .getUrl(Uri.parse(url))
@@ -125,37 +162,37 @@ class CoverRuntimeCache extends ChangeNotifier {
       request.headers.set(HttpHeaders.refererHeader, 'https://music.163.com/');
       request.headers.set(
         HttpHeaders.acceptHeader,
-        'image/avif,image/webp,image/*,*/*;q=0.8',
+        'image/webp,image/png,image/jpeg,image/gif;q=0.9,*/*;q=0.8',
       );
       final response = await request.close().timeout(
         const Duration(seconds: 6),
       );
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        _failedAt[url] = DateTime.now();
+      if (response.statusCode < 200 ||
+          response.statusCode >= 300 ||
+          response.contentLength > _maxDownloadBytes) {
+        if (generation == _generation) _markFailed(url);
         return null;
       }
-      final builder = BytesBuilder(copy: false);
-      await for (final chunk in response) {
-        builder.add(chunk);
-        if (builder.length > _maxDownloadBytes) {
-          _failedAt[url] = DateTime.now();
-          return null;
-        }
-      }
-      final bytes = builder.takeBytes();
+      final bytes = await readLimitedResponse(
+        response,
+        maxBytes: _maxDownloadBytes,
+        timeout: const Duration(seconds: 6),
+      );
+      if (generation != _generation) return null;
       if (!_looksLikeImage(bytes)) {
-        _failedAt[url] = DateTime.now();
+        _markFailed(url);
         return null;
       }
       _failedAt.remove(url);
       _store(url, bytes);
-      unawaited(_storeOnDisk(url, bytes));
+      unawaited(_storeOnDisk(url, bytes, generation));
       return bytes;
     } catch (_) {
-      _failedAt[url] = DateTime.now();
+      if (generation == _generation) _markFailed(url);
       return null;
     } finally {
       client.close(force: true);
+      _clients.remove(client);
       _releaseDownloadSlot();
     }
   }
@@ -165,13 +202,17 @@ class CoverRuntimeCache extends ChangeNotifier {
       final waiter = Completer<void>();
       _downloadWaiters.add(waiter);
       await waiter.future;
+      return;
     }
     _activeDownloads += 1;
   }
 
   void _releaseDownloadSlot() {
-    _activeDownloads = (_activeDownloads - 1).clamp(0, _maxConcurrentDownloads);
-    if (_downloadWaiters.isEmpty) return;
+    if (_downloadWaiters.isEmpty) {
+      _activeDownloads -= 1;
+      return;
+    }
+    // Transfer the occupied slot directly to the next waiter.
     final waiter = _downloadWaiters.removeAt(0);
     if (!waiter.isCompleted) waiter.complete();
   }
@@ -214,52 +255,79 @@ class CoverRuntimeCache extends ChangeNotifier {
   );
 
   Future<Uint8List?> _loadFromDisk(String url) async {
-    try {
-      final file = _diskFile(url);
-      if (!await file.exists()) return null;
-      final stat = await file.stat();
-      if (DateTime.now().difference(stat.modified) > const Duration(days: 30)) {
-        await file.delete();
+    return _withDisk(() async {
+      try {
+        final file = _diskFile(url);
+        if (!await file.exists()) return null;
+        final stat = await file.stat();
+        if (stat.size > _maxDownloadBytes ||
+            DateTime.now().difference(stat.modified) >
+                const Duration(days: 30)) {
+          await file.delete();
+          _diskBytes = -1;
+          return null;
+        }
+        final bytes = await file.readAsBytes();
+        if (!_looksLikeImage(bytes)) {
+          await file.delete();
+          _diskBytes = -1;
+          return null;
+        }
+        return bytes;
+      } catch (_) {
         return null;
       }
-      final bytes = await file.readAsBytes();
-      if (!_looksLikeImage(bytes)) {
-        await file.delete();
-        return null;
-      }
-      return bytes;
-    } catch (_) {
-      return null;
-    }
+    });
   }
 
-  Future<void> _storeOnDisk(String url, Uint8List bytes) async {
-    try {
-      final directory = _diskDirectory;
-      if (!await directory.exists()) await directory.create(recursive: true);
-      await _diskFile(url).writeAsBytes(bytes, flush: false);
-      _diskWriteCount += 1;
-      if (_diskWriteCount % 24 == 0) unawaited(_trimDiskCache());
-    } catch (_) {}
-  }
+  Future<void> _storeOnDisk(String url, Uint8List bytes, int generation) =>
+      _withDisk(() async {
+        if (generation != _generation) return;
+        try {
+          final directory = _diskDirectory;
+          if (!await directory.exists()) {
+            await directory.create(recursive: true);
+          }
+          if (_diskBytes < 0) await _trimDiskCache();
+          final file = _diskFile(url);
+          final previous = await file.exists() ? await file.length() : 0;
+          await _diskFile(url).writeAsBytes(bytes, flush: false);
+          _diskBytes += bytes.length - previous;
+          if (previous == 0) _diskEntries += 1;
+          if (_diskBytes > diskLimitBytes || _diskEntries > _maxDiskEntries) {
+            await _trimDiskCache();
+          }
+        } catch (_) {}
+      });
 
   Future<void> _trimDiskCache() async {
     try {
       final directory = _diskDirectory;
-      if (!await directory.exists()) return;
+      if (!await directory.exists()) {
+        _diskBytes = 0;
+        _diskEntries = 0;
+        return;
+      }
       final files = await directory
           .list()
           .where((entity) => entity is File)
           .cast<File>()
           .toList();
-      if (files.length <= _maxDiskEntries) return;
-      final entries = <({File file, DateTime modified})>[];
+      final entries = <({File file, DateTime modified, int bytes})>[];
       for (final file in files) {
-        entries.add((file: file, modified: (await file.stat()).modified));
+        final stat = await file.stat();
+        entries.add((file: file, modified: stat.modified, bytes: stat.size));
       }
+      _diskEntries = entries.length;
+      _diskBytes = entries.fold(0, (total, entry) => total + entry.bytes);
       entries.sort((a, b) => a.modified.compareTo(b.modified));
-      for (final entry in entries.take(files.length - _maxDiskEntries)) {
+      for (final entry in entries) {
+        if (_diskEntries <= _maxDiskEntries && _diskBytes <= diskLimitBytes) {
+          break;
+        }
         await entry.file.delete();
+        _diskBytes -= entry.bytes;
+        _diskEntries -= 1;
       }
     } catch (_) {}
   }
@@ -278,7 +346,7 @@ class CoverRuntimeCache extends ChangeNotifier {
   }
 
   void _scheduleNotify() {
-    if (_notifyTimer?.isActive == true) return;
+    if (_disposed || _notifyTimer?.isActive == true) return;
     _notifyTimer = Timer(const Duration(milliseconds: 40), () {
       _notifyTimer = null;
       notifyListeners();
@@ -288,22 +356,70 @@ class CoverRuntimeCache extends ChangeNotifier {
   void evict(String url) {
     final removed = _memory.remove(url);
     if (removed != null) _memoryBytes -= removed.lengthInBytes;
-    _failedAt[url] = DateTime.now();
+    _markFailed(url);
   }
 
-  void clear() {
+  void _markFailed(String url) {
+    _failedAt.remove(url);
+    _failedAt[url] = DateTime.now();
+    while (_failedAt.length > _maxEntries) {
+      _failedAt.remove(_failedAt.keys.first);
+    }
+  }
+
+  Future<T> _withDisk<T>(Future<T> Function() action) {
+    final future = _diskOperations.then((_) => action());
+    _diskOperations = future.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return future;
+  }
+
+  Future<({int diskBytes, int memoryBytes, int entries})> statistics() =>
+      _withDisk(() async {
+        await _trimDiskCache();
+        return (
+          diskBytes: _diskBytes.clamp(0, 1 << 40),
+          memoryBytes: _memoryBytes,
+          entries: _diskEntries,
+        );
+      });
+
+  Future<void> setDiskLimit(int bytes) {
+    diskLimitBytes = bytes.clamp(16 << 20, 512 << 20);
+    return _withDisk(_trimDiskCache);
+  }
+
+  Future<void> clear() {
+    _generation += 1;
+    _pending.clear();
+    for (final client in _clients.toList()) {
+      client.close(force: true);
+    }
     _memory.clear();
     _memoryBytes = 0;
     _failedAt.clear();
-    PaintingBinding.instance.imageCache
-      ..clear()
-      ..clearLiveImages();
-    unawaited(() async {
-      try {
-        if (await _diskDirectory.exists()) {
-          await _diskDirectory.delete(recursive: true);
-        }
-      } catch (_) {}
-    }());
+    _notifyTimer?.cancel();
+    _notifyTimer = null;
+    return _withDisk(() async {
+      if (await _diskDirectory.exists()) {
+        await _diskDirectory.delete(recursive: true);
+      }
+      _diskBytes = 0;
+      _diskEntries = 0;
+      if (!_disposed) notifyListeners();
+    });
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _generation += 1;
+    _notifyTimer?.cancel();
+    for (final client in _clients.toList()) {
+      client.close(force: true);
+    }
+    super.dispose();
   }
 }

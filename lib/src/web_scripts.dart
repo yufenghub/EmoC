@@ -772,14 +772,17 @@ const _sessionProbeScript = r'''
       if (url.indexOf('/') === 0) return 'https://music.163.com' + url;
       return url;
     }
-    function post(loggedIn, profile) {
+    function post(loggedIn, profile, verified) {
       profile = profile || {};
       EmoCMirror.postMessage(JSON.stringify({
         type: 'login',
+        sessionProbe: true,
+        verified: !!verified,
         loggedIn: !!loggedIn,
         accountId: String(profile.userId || profile.id || ''),
         accountName: clean(profile.nickname || profile.userName || profile.name || ''),
-        avatarUrl: abs(profile.avatarUrl || profile.avatarImgIdStr || ''),
+        avatarUrl: abs(profile.avatarUrl || ''),
+        vipType: Number(profile.vipType || 0),
         methods: []
       }));
     }
@@ -787,60 +790,17 @@ const _sessionProbeScript = r'''
       credentials: 'include',
       headers: { 'Accept': 'application/json, text/plain, */*' }
     })
-      .then(function (response) { return response.json(); })
+      .then(function (response) {
+        if (!response.ok) throw new Error('session probe failed');
+        return response.json();
+      })
       .then(function (data) {
         var profile = data.profile || (data.data && data.data.profile) || {};
-        post(!!(profile.userId || profile.id), profile);
+        post(!!(profile.userId || profile.id), profile, true);
       })
       .catch(function () {
-        post(false, {});
+        post(false, {}, false);
       });
-  })();
-''';
-
-const _searchScript = r'''
-  (function () {
-    var query = window.__EMOC_SEARCH_QUERY__ || '';
-    function clean(value) { return (value || '').replace(/\s+/g, ' ').trim(); }
-    function abs(url) {
-      if (!url) return '';
-      if (url.indexOf('//') === 0) return location.protocol + url;
-      if (url.indexOf('/') === 0) return 'https://music.163.com' + url;
-      return url;
-    }
-    var input = document.querySelector('.m-srch input,input[type="text"]');
-    if (input) {
-      input.focus();
-      input.value = query;
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      input.dispatchEvent(new KeyboardEvent('keyup', { key: query.slice(-1) || 'a', bubbles: true }));
-    }
-    setTimeout(function () {
-      var items = [];
-      var seen = {};
-      var nodes = Array.prototype.slice.call(document.querySelectorAll('.m-schlist a,.m-suggest a,.u-suggest a,a[href*="/search/"],a[href*="/song?id="],a[href*="/artist?id="],a[href*="/album?id="]'));
-      for (var i = 0; i < nodes.length; i++) {
-        var title = clean(nodes[i].textContent || nodes[i].getAttribute('title'));
-        if (!title || title.length < 1 || title === query) continue;
-        var key = title + '|' + (nodes[i].href || '');
-        if (seen[key]) continue;
-        seen[key] = true;
-        if (!nodes[i].getAttribute('data-emoc-id')) nodes[i].setAttribute('data-emoc-id', 'sug_' + i + '_' + Date.now());
-        items.push({
-          domId: nodes[i].getAttribute('data-emoc-id'),
-          kind: 'suggestion',
-          title: title,
-          subtitle: '相关搜索',
-          imageUrl: '',
-          href: abs(nodes[i].getAttribute('href') || '')
-        });
-        if (items.length >= 8) break;
-      }
-      if (items.length === 0 && query) {
-        items.push({ domId: 'direct_search', kind: 'suggestion', title: query, subtitle: '搜索关键词', imageUrl: '', href: '' });
-      }
-      EmoCMirror.postMessage(JSON.stringify({ type: 'suggestions', items: items }));
-    }, 600);
   })();
 ''';
 

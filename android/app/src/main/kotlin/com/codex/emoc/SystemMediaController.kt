@@ -25,7 +25,9 @@ data class TrackMetadata(
     val songId: String = "",
     val title: String = "EmoC",
     val artist: String = "网易云音乐",
-    val coverUrl: String = ""
+    val coverUrl: String = "",
+    val gainDb: Double = 0.0,
+    val peak: Double = 0.0
 )
 
 class SystemMediaController(

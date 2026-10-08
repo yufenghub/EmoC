@@ -9,6 +9,14 @@
 
 喜欢的话请点上一个 star，非常感谢！！！
 
+[下载最新版 APK / Download](https://github.com/yufenghub/EmoC/releases/latest) · [更新日志 / Changelog](CHANGELOG.md)
+
+## 最新更新 / What's New
+
+`1.0.12` 汇总了 `1.0.8` 之后的更新：华丽液态玻璃外观、镂空/实心卡片、分区域无字模式、播放页实时预览与字号/按钮大小调节、本地音乐、最近播放、自定义均衡器、无缝播放与交叉淡化、网络音质策略，以及首页长列表性能优化。Apple Music 样式的歌词现在根据实际可用高度和文字大小自动调整显示行数。
+
+Version `1.0.12` brings liquid-glass styling, outline/solid cards, per-page text visibility, live player previews and sizing controls, local music, listening history, a custom equalizer, playback transitions, network-aware quality settings, and lazy home lists. Apple Music-style lyrics now adapt their visible row count to the available height and text size.
+
 ## 项目说明 / About
 
 EmoC 是一个 Flutter + Kotlin Android 客户端，聚焦首页推荐、歌单、搜索、播放控制、歌词、桌面歌词、动态取色和系统媒体控件。它不是音乐服务端，也不托管音乐、歌词或封面内容。
@@ -42,34 +50,60 @@ EmoC depends on the user's own NetEase Cloud Music account and `music.163.com` w
 ## 功能特性 / Features
 
 - 首页每日歌曲推荐<br>
-  展示账号相关的每日歌曲推荐，支持下拉刷新和缓存恢复。
+  展示账号相关的每日歌曲推荐，支持下拉刷新、缓存恢复和歌曲行按需加载。搜索支持历史记录、实时建议与结果切换。
 
 - 歌单与本地搜索<br>
-  展示喜欢的音乐和用户创建的歌单，歌单内支持本地搜索、懒加载、长按管理、左滑删除。
+  展示喜欢的音乐和用户创建的歌单，歌单内支持搜索、懒加载、多选、排序与批量管理。歌单封面跟随第一首歌曲。
+
+- 本地音乐<br>
+  支持选择本地文件或文件夹、建立本地歌单、搜索本地歌曲，并读取配套 LRC 歌词。
 
 - 播放控制<br>
   支持播放/暂停、上一首、下一首、进度、音量、循环模式、收藏、播放列表和 VIP 不可播提示/跳过策略。
 
 - 歌词体验<br>
-  支持歌词页、当前歌词高亮、滚动校准、翻译歌词和全屏歌词显示。
+  支持专注歌词、网易云风格唱片和 Apple Music 风格封面三种播放器。当前歌词高亮、译文弱化，歌词随播放平滑滚动；Apple Music 样式根据可用高度、歌词字号与系统文字缩放调整行数和行距。
+
+- 播放页自定义<br>
+  支持真实界面实时预览、按钮显隐、长按拖拽换位、按钮大小、歌词字号，以及背景和动效调节。歌词字号同时根据屏幕大小自适应。
+
+- 播放与音频设置<br>
+  支持无缝连续播放、0–8 秒交叉淡化、同时播放，以及五频段自定义均衡器和原声/低音/人声/流行/摇滚/电子预设。音量均衡使用歌曲接口返回的增益与峰值信息，实际效果取决于歌曲数据。
+
+- 网络与音质<br>
+  可分别设置 Wi-Fi 和移动网络的播放音质、预加载与移动网络播放策略，并在请求失败时按设置回退音质。可用音质仍取决于账号权限与歌曲来源。
 
 - 桌面歌词<br>
   支持悬浮窗权限申请、透明度、背景色、歌词色、字号、字重、单句/多句、锁定、居中线约束、前台自动隐藏和动态取色。
 
 - 系统媒体集成<br>
-  支持 Android 通知栏/控制中心媒体状态、耳机/蓝牙断开暂停、后台播放保活和系统播放状态恢复。
+  支持 Android 通知栏/控制中心媒体状态、桌面播放小组件、耳机/蓝牙断开暂停、后台播放保活和系统播放状态恢复。
 
 - 个性化外观<br>
-  支持浅色、深色、跟随系统主题、动态取色和播放卡片颜色过渡。
+  支持简约与华丽液态玻璃外观、镂空/实心卡片、卡片边框开关，以及浅色/深色/跟随系统主题。背景可选择亮暗优先或封面优先，切歌时平滑过渡；文字、图标、进度条可分别动态取色或选择固定颜色。
+
+- 无字模式<br>
+  支持首页、歌单、设置和歌词区域分别自定义，并实时预览。可隐藏页面/分组标题、搜索栏、本地音乐入口、新建歌单按钮等内容。
+
+- 最近播放与搜索历史<br>
+  支持最近播放列表和搜索历史的保存、查看、清理与记录开关。
 
 - 缓存与恢复<br>
   缓存推荐、歌单、播放列表、播放卡片、主题偏好和循环状态，提升启动后的恢复体验。
 
 ## 界面展示 / Screenshots
 
+以下是 `1.0.12` 在 MuMu 上截取的实际运行界面，展示华丽外观和镂空卡片。
+
+Actual `1.0.12` screenshots captured in MuMu, showing liquid-glass styling and outline cards.
+
 | 首页 / Home | 歌词 / Lyrics |
 | --- | --- |
 | <img src=".github/assets/home.png" width="280" alt="EmoC 首页"> | <img src=".github/assets/lyrics.png" width="280" alt="EmoC 歌词页"> |
+
+| 网易云风格 / Record Player | Apple Music 风格 / Artwork Player |
+| --- | --- |
+| <img src=".github/assets/player-netease.png" width="280" alt="EmoC 唱片播放器"> | <img src=".github/assets/player-apple-music.png" width="280" alt="EmoC Apple Music 风格播放器"> |
 
 | 歌单 / Playlists | 歌单详情 / Playlist Detail |
 | --- | --- |
@@ -79,9 +113,13 @@ EmoC depends on the user's own NetEase Cloud Music account and `music.163.com` w
 | --- | --- |
 | <img src=".github/assets/mine.png" width="280" alt="EmoC 我的页"> | <img src=".github/assets/settings.png" width="280" alt="EmoC 设置项"> |
 
-| 桌面歌词设置 / Desktop Lyrics Settings |
-| --- |
-| <img src=".github/assets/desktop-lyrics-settings.png" width="280" alt="EmoC 桌面歌词设置"> |
+| 播放页自定义 / Player Customization | 卡片样式 / Card Style |
+| --- | --- |
+| <img src=".github/assets/player-customization.png" width="280" alt="EmoC 播放页实时预览与自定义"> | <img src=".github/assets/card-style.png" width="280" alt="EmoC 卡片样式设置"> |
+
+| 自定义均衡器 / Equalizer | 桌面歌词设置 / Desktop Lyrics Settings |
+| --- | --- |
+| <img src=".github/assets/equalizer.png" width="280" alt="EmoC 五频段均衡器"> | <img src=".github/assets/desktop-lyrics-settings.png" width="280" alt="EmoC 桌面歌词设置"> |
 
 ## 文档 / Documents
 
@@ -110,6 +148,8 @@ See [DISCLAIMER.md](DISCLAIMER.md) for the full disclaimer.
 
 - [qier222/YesPlayMusic](https://github.com/qier222/YesPlayMusic)：开源音乐客户端项目，提供了客户端形态和交互方向上的参考。
 - [SPlayer-Dev/SPlayer](https://github.com/SPlayer-Dev/SPlayer)：开源播放器项目，提供了仓库展示、文档组织和播放器体验上的参考。
+- [WXRIW/Lyricify-Backgrounds](https://github.com/WXRIW/Lyricify-Backgrounds)：封面流动背景的参考与移植来源，许可和修改说明见 [第三方声明](third_party/lyricify-backgrounds/NOTICE.txt)。
+- [liquid_glass_widgets](https://pub.dev/packages/liquid_glass_widgets)：液态玻璃组件，许可说明见 [第三方声明](third_party/liquid-glass-widgets/THIRD_PARTY_NOTICES.txt)。
 
 ## 开源许可 / Open Source License
 

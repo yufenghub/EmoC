@@ -58,6 +58,44 @@ class NativeBridge {
     return _nativeChannel.invokeMethod<String>('prefsGet', {'key': key});
   }
 
+  static Future<Map<String, String?>> getPreferences(List<String> keys) async {
+    try {
+      return await _nativeChannel.invokeMapMethod<String, String?>(
+            'prefsGetMany',
+            {'keys': keys},
+          ) ??
+          {};
+    } on PlatformException catch (error) {
+      debugPrint('Preferences: ${error.code}');
+    } on MissingPluginException {
+      return {};
+    }
+    return {};
+  }
+
+  static Future<Map<String, dynamic>> networkState() async =>
+      await _nativeChannel.invokeMapMethod<String, dynamic>('networkState') ??
+      {};
+
+  static Future<String?> consumeWidgetAction() =>
+      _nativeChannel.invokeMethod<String>('consumeWidgetAction');
+
+  static Future<Map<String, dynamic>?> pickLocalMusic({bool folder = false}) =>
+      _nativeChannel.invokeMapMethod<String, dynamic>('localMusicPick', {
+        'folder': folder,
+      });
+
+  static Future<Map<String, dynamic>?> scanLocalMusic(List<String> roots) =>
+      _nativeChannel.invokeMapMethod<String, dynamic>('localMusicScan', {
+        'roots': roots,
+      });
+
+  static Future<String?> pickLocalLyrics() =>
+      _nativeChannel.invokeMethod<String>('localLyricsPick');
+
+  static Future<void> cancelLocalMusicImport() =>
+      _nativeChannel.invokeMethod('cancelLocalMusicImport');
+
   static Future<void> setString(String key, String value) {
     return _nativeChannel.invokeMethod('prefsSet', {
       'key': key,
@@ -152,7 +190,12 @@ class NativeBridge {
         false;
   }
 
-  static Future<void> playUrl(String url, PlayerSnapshot player) {
+  static Future<void> playUrl(
+    String url,
+    PlayerSnapshot player, {
+    double gainDb = 0,
+    double peak = 0,
+  }) {
     return _nativeChannel.invokeMethod('playUrl', {
       'url': url,
       'songId': player.songId,
@@ -160,8 +203,43 @@ class NativeBridge {
       'artist': player.displayArtist,
       'coverUrl': player.coverUrl,
       'durationMs': player.durationMilliseconds,
+      'gainDb': gainDb,
+      'peak': peak,
     });
   }
+
+  static Future<void> clearQueuedTrack() =>
+      _nativeChannel.invokeMethod('clearQueuedTrack');
+
+  static Future<void> setVolumeNormalization(bool enabled) =>
+      _nativeChannel.invokeMethod('setVolumeNormalization', {'value': enabled});
+
+  static Future<void> setEqualizer(bool enabled, List<double> bands) =>
+      _nativeChannel.invokeMethod('setEqualizer', {
+        'enabled': enabled,
+        'bands': bands,
+      });
+
+  static Future<bool> queueNextTrack({
+    required String expectedSongId,
+    required MirrorItem song,
+    required String url,
+    required int crossfadeMs,
+    double gainDb = 0,
+    double peak = 0,
+  }) async =>
+      await _nativeChannel.invokeMethod<bool>('queueNextTrack', {
+        'expectedSongId': expectedSongId,
+        'songId': song.id,
+        'title': song.title,
+        'artist': song.subtitle,
+        'coverUrl': song.imageUrl,
+        'url': url,
+        'crossfadeMs': crossfadeMs,
+        'gainDb': gainDb,
+        'peak': peak,
+      }) ??
+      false;
 
   static Future<void> updatePlayerMetadata(PlayerSnapshot player) {
     return _nativeChannel.invokeMethod('updatePlayerMetadata', {

@@ -9,6 +9,8 @@ class PlaylistModule {
   String _activeColorKey = '';
   Future<void>? _activeColorRequest;
 
+  void cancelLoad() => _loadSerial += 1;
+
   Future<void> load(MirrorItem playlist) async {
     final serial = ++_loadSerial;
     bool isCurrent() =>

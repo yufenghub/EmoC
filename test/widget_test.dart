@@ -6,6 +6,18 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:emoc/main.dart';
 
 void main() {
+  test('player sizing preferences restore and clamp', () {
+    final model = AppModel();
+    addTearDown(model.dispose);
+    model.restoreInterfacePreferences(
+      '{"playerButtonScale":1.25,"playerLyricsFontScale":1.35}',
+    );
+    expect(model.playerButtonScale, 1.25);
+    expect(model.playerLyricsFontScale, 1.35);
+    model.updateEffect('playerButtonScale', 4);
+    expect(model.playerButtonScale, 1.4);
+  });
+
   test('playlist mutations use the current official API contracts', () async {
     final requests =
         <({String path, Map<String, dynamic> data, bool useGet})>[];
@@ -73,7 +85,10 @@ void main() {
   });
 
   testWidgets('renders the main shell before login probing', (tester) async {
-    final model = AppModel()..showSongCovers = false;
+    final model = AppModel()
+      ..showSongCovers = false
+      ..visualStyle = 'simple'
+      ..iconOnlyNavigation = false;
     addTearDown(model.dispose);
 
     await tester.pumpWidget(
@@ -469,6 +484,8 @@ void main() {
 
       final model = AppModel()
         ..showSongCovers = false
+        ..visualStyle = 'simple'
+        ..iconOnlyNavigation = false
         ..playerBarVisible = true
         ..player = const PlayerSnapshot(
           visible: true,
@@ -594,9 +611,16 @@ void main() {
       expect(find.byKey(ValueKey(layout.widgetKey)), findsOneWidget);
       expect(find.text('布局测试歌曲'), findsOneWidget);
       expect(
-        find.text(
-          '当前播放歌词很长也应该保持完整布局\nThe active translated lyric remains readable',
-        ),
+        tester.widget<Text>(find.text('布局测试歌曲')).textAlign,
+        TextAlign.center,
+      );
+      expect(
+        tester.widget<ScrollingLyrics>(find.byType(ScrollingLyrics)).textAlign,
+        TextAlign.center,
+      );
+      expect(find.text('当前播放歌词很长也应该保持完整布局'), findsOneWidget);
+      expect(
+        find.text('The active translated lyric remains readable'),
         findsOneWidget,
       );
       if (layout.portrait) {
@@ -718,6 +742,95 @@ void main() {
     });
   }
 
+  testWidgets('Apple lyrics fill available height and adapt to text sizes', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final model = AppModel()..showSongCovers = false;
+    addTearDown(model.dispose);
+    const song = MirrorItem(
+      domId: 'adaptive-lyrics',
+      kind: 'song',
+      title: 'Song',
+      subtitle: 'Artist',
+      imageUrl: '',
+      href: '',
+    );
+    final lyrics = List.generate(
+      40,
+      (index) => LyricLine(time: index * 10.0, text: 'Lyric $index'),
+    );
+
+    Future<List<Rect>> visibleRows({
+      required double height,
+      double fontScale = 1,
+      double systemScale = 1,
+    }) async {
+      tester.view.physicalSize = Size(390, height);
+      model.playerLyricsFontScale = fontScale;
+      await tester.pumpWidget(
+        AppScope(
+          model: model,
+          child: MaterialApp(
+            builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(
+                context,
+              ).copyWith(textScaler: TextScaler.linear(systemScale)),
+              child: child!,
+            ),
+            home: Scaffold(
+              body: AppleMusicPlayerView(
+                model: model,
+                player: PlayerSnapshot.empty,
+                song: song,
+                lyrics: lyrics,
+                lyricsLoading: false,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 450));
+      expect(tester.takeException(), isNull);
+      final viewport = tester.getRect(
+        find.byKey(const ValueKey('apple-lyrics-viewport')),
+      );
+      final rows = <Rect>[];
+      for (var index = 0; index < lyrics.length; index++) {
+        final line = find.byKey(ValueKey('apple-lyric-$index'));
+        if (line.evaluate().isEmpty) continue;
+        final rect = tester.getRect(line);
+        if (rect.top >= viewport.top - 0.1 &&
+            rect.bottom <= viewport.bottom + 0.1) {
+          rows.add(rect);
+        }
+      }
+      for (var index = 1; index < rows.length; index++) {
+        expect(rows[index].top, greaterThanOrEqualTo(rows[index - 1].bottom));
+      }
+      expect(
+        viewport.bottom - rows.last.bottom,
+        lessThan(rows.last.height + 20),
+      );
+      return rows;
+    }
+
+    final shorter = await visibleRows(height: 700);
+    final taller = await visibleRows(height: 1100);
+    expect(taller.length, greaterThan(shorter.length + 3));
+    expect(taller.length, greaterThan(5));
+    final largerFont = await visibleRows(height: 1100, fontScale: 1.5);
+    expect(largerFont.length, lessThan(taller.length));
+    final systemScaled = await visibleRows(
+      height: 1100,
+      fontScale: 1.5,
+      systemScale: 1.6,
+    );
+    expect(systemScaled.length, lessThan(largerFont.length));
+  });
+
   testWidgets('lyrics page owns the player bar and hides it with chrome', (
     tester,
   ) async {
@@ -740,7 +853,6 @@ void main() {
       findsOneWidget,
     );
     expect(find.byKey(const ValueKey('chrome-visible')), findsOneWidget);
-    final activeLyricBeforeFullscreen = tester.getCenter(find.text('当前歌词')).dy;
     final headerFinder = find.byKey(
       const ValueKey('lyrics-content-header-9001|详情页布局歌曲'),
     );
@@ -758,22 +870,113 @@ void main() {
       findsNothing,
     );
     expect(find.byKey(const ValueKey('chrome-hidden')), findsOneWidget);
-    final activeLyricAfterFullscreen = tester.getCenter(find.text('当前歌词')).dy;
     final headerAfterFullscreen = tester.getCenter(headerFinder).dy;
     final headerTopAfterFullscreen = tester.getTopLeft(headerFinder).dy;
     final lyricViewportAfterFullscreen = tester.getSize(
       find.byType(ScrollingLyrics),
     );
-    expect(
-      (activeLyricAfterFullscreen - activeLyricBeforeFullscreen).abs(),
-      lessThan(1),
-    );
+    expect(find.text('当前歌词'), findsOneWidget);
     expect(headerAfterFullscreen, lessThan(headerBeforeFullscreen - 20));
     expect(headerTopAfterFullscreen, closeTo(0, 1));
     expect(
       lyricViewportAfterFullscreen.height,
       greaterThan(lyricViewportBeforeFullscreen.height + 100),
     );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('active lyric follows the SPlayer quarter-height anchor', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final lines = List.generate(
+      20,
+      (index) => LyricLine(time: index.toDouble(), text: '歌词 $index'),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ScrollingLyrics(
+            lines: lines,
+            currentTimeSeconds: 10,
+            height: 500,
+          ),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pump(const Duration(milliseconds: 600));
+
+    final viewport = tester.getRect(find.byType(ScrollingLyrics));
+    final activeLine = tester.getRect(
+      find.ancestor(
+        of: find.text('歌词 10'),
+        matching: find.byType(LyricLineView),
+      ),
+    );
+    expect(
+      activeLine.top - viewport.top,
+      closeTo((viewport.height - activeLine.height) * 0.25, 2),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('lyrics type scales with the screen and player preference', (
+    tester,
+  ) async {
+    final lines = [const LyricLine(time: 0, text: '自适应歌词')];
+    Future<double> textSize(Size size, double preference) async {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ScrollingLyrics(
+              lines: lines,
+              currentTimeSeconds: 0,
+              height: 300,
+              fontScale: preference,
+            ),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 450));
+      final style = tester.widget<AnimatedDefaultTextStyle>(
+        find
+            .ancestor(
+              of: find.text('自适应歌词'),
+              matching: find.byType(AnimatedDefaultTextStyle),
+            )
+            .first,
+      );
+      return style.style.fontSize!;
+    }
+
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final compact = await textSize(const Size(320, 640), 1);
+    final larger = await textSize(const Size(800, 1200), 1);
+    final customized = await textSize(const Size(800, 1200), 1.25);
+    expect(larger, greaterThan(compact));
+    expect(customized, greaterThan(larger));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('simple player page uses the simple background', (tester) async {
+    final model = _SongDetailLayoutModel()..visualStyle = 'simple';
+    addTearDown(model.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SongDetailPage(model: model, song: model.testSong),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(find.byType(CoverGlowBackground), findsNothing);
+    expect(find.byType(ScrollingLyrics), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -868,6 +1071,39 @@ void main() {
     await tester.pump(const Duration(milliseconds: 700));
 
     expect(find.byKey(const ValueKey('apple-portrait-player')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('player style is restored and subsequent swipes are remembered', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final model = _SongDetailLayoutModel()..lyricsPlayerStyle = 2;
+    addTearDown(model.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SongDetailPage(model: model, song: model.testSong),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 350));
+
+    expect(find.bySemanticsLabel('封面播放器页，第 3 页，共 3 页'), findsOneWidget);
+    await tester.fling(find.byType(PageView), const Offset(-700, 0), 1200);
+    await tester.pump(const Duration(milliseconds: 700));
+
+    final rememberedStyle = model.lyricsPlayerStyle;
+    expect(rememberedStyle, isNot(2));
+    const pageNames = ['歌词页', '黑胶播放器页', '封面播放器页'];
+    expect(
+      find.bySemanticsLabel(
+        '${pageNames[rememberedStyle]}，第 ${rememberedStyle + 1} 页，共 3 页',
+      ),
+      findsOneWidget,
+    );
     expect(tester.takeException(), isNull);
   });
 

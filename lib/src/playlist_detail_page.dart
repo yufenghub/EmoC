@@ -134,148 +134,184 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
             ? _viewport.visibleSongs
             : filteredSongs.take(pendingVisibleCount).toList(growable: false);
         final searching = _searchQuery.isNotEmpty;
-        return SafeArea(
-          child: RefreshIndicator(
-            edgeOffset: 4,
-            displacement: 30,
-            strokeWidth: 2.4,
-            color: Theme.of(context).colorScheme.primary,
-            backgroundColor: Theme.of(context).colorScheme.surfaceContainerHigh,
-            onRefresh: _refreshPlaylistSongs,
-            child: CustomScrollView(
-              physics: const AlwaysScrollableScrollPhysics(),
-              controller: _controller,
-              scrollCacheExtent: const ScrollCacheExtent.pixels(700),
-              slivers: [
-                SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
-                  sliver: SliverList.list(
+        final content = CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          controller: _controller,
+          scrollCacheExtent: const ScrollCacheExtent.pixels(700),
+          slivers: [
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+              sliver: SliverList.list(
+                children: [
+                  Row(
                     children: [
-                      Row(
-                        children: [
-                          IconButton(
-                            tooltip: '返回歌单',
-                            onPressed: () {
-                              final onBack = widget.onBack;
-                              if (onBack != null) {
-                                onBack();
-                              } else {
-                                Navigator.of(context).maybePop();
-                              }
-                            },
-                            icon: const Icon(Icons.arrow_back),
-                          ),
-                          const SizedBox(width: 4),
-                          Expanded(
-                            child: Text(
+                      IconButton(
+                        tooltip: '返回歌单',
+                        onPressed: () {
+                          final onBack = widget.onBack;
+                          if (onBack != null) {
+                            onBack();
+                          } else {
+                            Navigator.of(context).maybePop();
+                          }
+                        },
+                        icon: const Icon(Icons.arrow_back),
+                      ),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          widget.playlist.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.titleLarge
+                              ?.copyWith(fontWeight: FontWeight.w900),
+                        ),
+                      ),
+                      AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 260),
+                        switchInCurve: Curves.easeOutCubic,
+                        switchOutCurve: Curves.easeInCubic,
+                        transitionBuilder: (child, animation) {
+                          return FadeTransition(
+                            opacity: animation,
+                            child: SizeTransition(
+                              axis: Axis.horizontal,
+                              sizeFactor: animation,
+                              child: child,
+                            ),
+                          );
+                        },
+                        child: widget.model.playlistLoading
+                            ? const Padding(
+                                key: ValueKey('playlist-loading-chip'),
+                                padding: EdgeInsets.only(left: 10),
+                                child: PlaylistLoadingChip(),
+                              )
+                            : const SizedBox(
+                                key: ValueKey('playlist-loading-empty'),
+                              ),
+                      ),
+                      IconButton(
+                        tooltip: '批量管理',
+                        onPressed: songs.isEmpty
+                            ? null
+                            : () => openAppPage<void>(
+                                context,
+                                PlaylistBatchPage(
+                                  model: widget.model,
+                                  playlist: widget.playlist,
+                                  songs: songs,
+                                ),
+                              ),
+                        icon: const Icon(Icons.checklist),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      Container(
+                        width: 58,
+                        height: 58,
+                        decoration: BoxDecoration(
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.surfaceContainerHighest,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        clipBehavior: Clip.antiAlias,
+                        child:
+                            widget.model
+                                .playlistCoverFor(widget.playlist)
+                                .isNotEmpty
+                            ? CoverImage(
+                                url: widget.model.playlistCoverFor(
+                                  widget.playlist,
+                                ),
+                                identity:
+                                    'playlist-detail-${widget.playlist.id}',
+                                preferredSize: 160,
+                                decodeSize: 112,
+                              )
+                            : Icon(
+                                widget.playlist.kind == 'liked'
+                                    ? Icons.favorite
+                                    : Icons.queue_music,
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurfaceVariant,
+                              ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
                               widget.playlist.title,
-                              maxLines: 1,
+                              maxLines: 2,
                               overflow: TextOverflow.ellipsis,
                               style: Theme.of(context).textTheme.titleLarge
                                   ?.copyWith(fontWeight: FontWeight.w900),
                             ),
-                          ),
-                          AnimatedSwitcher(
-                            duration: const Duration(milliseconds: 260),
-                            switchInCurve: Curves.easeOutCubic,
-                            switchOutCurve: Curves.easeInCubic,
-                            transitionBuilder: (child, animation) {
-                              return FadeTransition(
-                                opacity: animation,
-                                child: SizeTransition(
-                                  axis: Axis.horizontal,
-                                  sizeFactor: animation,
-                                  child: child,
-                                ),
-                              );
-                            },
-                            child: widget.model.playlistLoading
-                                ? const Padding(
-                                    key: ValueKey('playlist-loading-chip'),
-                                    padding: EdgeInsets.only(left: 10),
-                                    child: PlaylistLoadingChip(),
-                                  )
-                                : const SizedBox(
-                                    key: ValueKey('playlist-loading-empty'),
-                                  ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 14),
-                      Row(
-                        children: [
-                          Container(
-                            width: 58,
-                            height: 58,
-                            decoration: BoxDecoration(
-                              color: Theme.of(
-                                context,
-                              ).colorScheme.surfaceContainerHighest,
-                              borderRadius: BorderRadius.circular(8),
+                            const SizedBox(height: 6),
+                            Text(
+                              widget.playlist.subtitle,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
                             ),
-                            child: Icon(
-                              widget.playlist.kind == 'liked'
-                                  ? Icons.favorite
-                                  : Icons.queue_music,
-                              color: Theme.of(
-                                context,
-                              ).colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                          const SizedBox(width: 14),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  widget.playlist.title,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: Theme.of(context).textTheme.titleLarge
-                                      ?.copyWith(fontWeight: FontWeight.w900),
-                                ),
-                                const SizedBox(height: 6),
-                                Text(
-                                  widget.playlist.subtitle,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
-                      const SizedBox(height: 20),
-                      PlaylistSearchField(
-                        controller: _searchController,
-                        enabled: songs.isNotEmpty,
-                      ),
-                      const SizedBox(height: 14),
-                      SectionHeader(
-                        title: searching ? '搜索结果' : '歌曲列表',
-                        count: filteredSongs.length,
-                      ),
-                      const SizedBox(height: 10),
                     ],
                   ),
-                ),
-                LazyPlaylistSongList(
-                  model: widget.model,
-                  playlist: widget.playlist,
-                  visibleSongs: visibleSongs,
-                  playbackSongs: songs,
-                  sourceSongs: filteredSongs,
-                  loading:
-                      widget.model.playlistLoading ||
-                      _viewport.preparing ||
-                      (!viewportMatches && filteredSongs.isNotEmpty),
-                  hasMore: viewportMatches && _viewport.hasMore,
-                  emptyText: searching ? '未找到匹配歌曲' : '无歌曲',
-                ),
-                const SliverToBoxAdapter(child: SizedBox(height: 28)),
-              ],
+                  const SizedBox(height: 20),
+                  PlaylistSearchField(
+                    controller: _searchController,
+                    enabled: songs.isNotEmpty,
+                  ),
+                  const SizedBox(height: 14),
+                  SectionHeader(
+                    title: searching ? '搜索结果' : '歌曲列表',
+                    count: filteredSongs.length,
+                  ),
+                  const SizedBox(height: 10),
+                ],
+              ),
             ),
-          ),
+            LazyPlaylistSongList(
+              model: widget.model,
+              playlist: widget.playlist,
+              visibleSongs: visibleSongs,
+              playbackSongs: songs,
+              sourceSongs: filteredSongs,
+              loading:
+                  widget.model.playlistLoading ||
+                  _viewport.preparing ||
+                  (!viewportMatches && filteredSongs.isNotEmpty),
+              hasMore: viewportMatches && _viewport.hasMore,
+              emptyText: searching ? '未找到匹配歌曲' : '无歌曲',
+            ),
+            const SliverToBoxAdapter(child: SizedBox(height: 28)),
+          ],
+        );
+        return SafeArea(
+          child: widget.model.visualStyle == 'liquid'
+              ? _LiquidRefreshIndicator(
+                  onRefresh: _refreshPlaylistSongs,
+                  child: content,
+                )
+              : RefreshIndicator(
+                  edgeOffset: 4,
+                  displacement: 30,
+                  strokeWidth: 2.4,
+                  color: Theme.of(context).colorScheme.primary,
+                  backgroundColor: Theme.of(
+                    context,
+                  ).colorScheme.surfaceContainerHigh,
+                  onRefresh: _refreshPlaylistSongs,
+                  child: content,
+                ),
         );
       },
     );
@@ -294,24 +330,41 @@ class PlaylistSearchField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return TextField(
-      controller: controller,
-      enabled: enabled,
-      textInputAction: TextInputAction.search,
-      decoration: InputDecoration(
-        prefixIcon: const Icon(Icons.search),
-        suffixIcon: controller.text.isEmpty
-            ? null
-            : IconButton(
-                tooltip: '清空搜索',
-                onPressed: controller.clear,
-                icon: const Icon(Icons.close),
+    return TextFieldTapRegion(
+      child: SearchFieldSurface(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: controller,
+              enabled: enabled,
+              textInputAction: TextInputAction.search,
+              onTapOutside: (_) => FocusScope.of(context).unfocus(),
+              onSubmitted: (_) => FocusScope.of(context).unfocus(),
+              decoration: InputDecoration(
+                prefixIcon: controller.text.isNotEmpty
+                    ? IconButton(
+                        tooltip: '返回歌曲列表',
+                        onPressed: () {
+                          controller.clear();
+                          FocusScope.of(context).unfocus();
+                        },
+                        icon: const Icon(Icons.arrow_back),
+                      )
+                    : const Icon(Icons.search),
+                suffixIcon: IconButton(
+                  tooltip: '搜索',
+                  onPressed: enabled
+                      ? () => FocusScope.of(context).unfocus()
+                      : null,
+                  icon: const Icon(Icons.arrow_forward),
+                ),
+                hintText: enabled ? '搜索音乐' : '歌单加载后可搜索',
+                border: InputBorder.none,
+                contentPadding: const EdgeInsets.symmetric(vertical: 16),
               ),
-        hintText: enabled ? '在当前歌单内搜索歌曲' : '歌单加载后可搜索',
-        filled: true,
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: BorderSide.none,
+            ),
+          ],
         ),
       ),
     );
@@ -475,6 +528,9 @@ class _PlaylistSwipeSongTileState extends State<PlaylistSwipeSongTile> {
   bool get _canDelete =>
       widget.playlist.kind == 'playlist' || widget.playlist.kind == 'liked';
 
+  bool get _showSwipeDelete =>
+      _canDelete && widget.model.visualStyle != 'liquid';
+
   @override
   void didUpdateWidget(covariant PlaylistSwipeSongTile oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -487,14 +543,14 @@ class _PlaylistSwipeSongTileState extends State<PlaylistSwipeSongTile> {
   }
 
   void _handleDragUpdate(DragUpdateDetails details) {
-    if (!_canDelete || _removing) return;
+    if (!_showSwipeDelete || _removing) return;
     setState(() {
       _dragOffset = (_dragOffset + details.delta.dx).clamp(-_deleteWidth, 0);
     });
   }
 
   void _handleDragEnd(DragEndDetails details) {
-    if (!_canDelete || _removing) return;
+    if (!_showSwipeDelete || _removing) return;
     final velocity = details.primaryVelocity ?? 0;
     setState(() {
       if (velocity < -260 || _dragOffset.abs() > _deleteWidth * 0.42) {
@@ -528,6 +584,27 @@ class _PlaylistSwipeSongTileState extends State<PlaylistSwipeSongTile> {
     });
   }
 
+  void _showSongActions() {
+    if (!_canDelete) return;
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => LiquidSurface(
+        model: widget.model,
+        child: SafeArea(
+          child: ListTile(
+            leading: const Icon(Icons.remove_circle_outline),
+            title: Text(widget.playlist.kind == 'liked' ? '取消喜欢' : '从歌单移除'),
+            onTap: () {
+              Navigator.pop(sheetContext);
+              unawaited(_deleteWithAnimation());
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -547,33 +624,44 @@ class _PlaylistSwipeSongTileState extends State<PlaylistSwipeSongTile> {
               opacity: _collapsing ? 0 : 1,
               child: Stack(
                 children: [
-                  Positioned.fill(
-                    child: Align(
-                      alignment: Alignment.centerRight,
-                      child: SizedBox(
-                        width: _deleteWidth,
-                        height: _songTileHeight,
-                        child: FilledButton(
-                          style: FilledButton.styleFrom(
-                            backgroundColor: theme.colorScheme.errorContainer,
-                            foregroundColor: theme.colorScheme.onErrorContainer,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(8),
+                  if (_showSwipeDelete)
+                    Positioned.fill(
+                      child: Align(
+                        alignment: Alignment.centerRight,
+                        child: SizedBox(
+                          width: _deleteWidth,
+                          height: _songTileHeight,
+                          child: FilledButton(
+                            style: FilledButton.styleFrom(
+                              backgroundColor: theme.colorScheme.errorContainer,
+                              foregroundColor:
+                                  theme.colorScheme.onErrorContainer,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
                             ),
+                            onPressed: !_canDelete
+                                ? null
+                                : _deleteWithAnimation,
+                            child: const Icon(Icons.delete_outline),
                           ),
-                          onPressed: !_canDelete ? null : _deleteWithAnimation,
-                          child: const Icon(Icons.delete_outline),
                         ),
                       ),
                     ),
-                  ),
                   AnimatedSlide(
                     duration: const Duration(milliseconds: 240),
                     curve: Curves.easeOutCubic,
                     offset: Offset(slideFraction, 0),
                     child: GestureDetector(
-                      onHorizontalDragUpdate: _handleDragUpdate,
-                      onHorizontalDragEnd: _handleDragEnd,
+                      onHorizontalDragUpdate: _showSwipeDelete
+                          ? _handleDragUpdate
+                          : null,
+                      onHorizontalDragEnd: _showSwipeDelete
+                          ? _handleDragEnd
+                          : null,
+                      onLongPress: widget.model.visualStyle == 'liquid'
+                          ? _showSongActions
+                          : null,
                       child: PreparedSongTile(
                         song: widget.song,
                         sourceList: widget.sourceList,

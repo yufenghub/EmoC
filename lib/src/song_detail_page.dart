@@ -1,10 +1,16 @@
 part of '../main.dart';
 
 class SongDetailPage extends StatefulWidget {
-  const SongDetailPage({required this.model, required this.song, super.key});
+  const SongDetailPage({
+    required this.model,
+    required this.song,
+    this.previewStyle,
+    super.key,
+  });
 
   final AppModel model;
   final MirrorItem song;
+  final int? previewStyle;
 
   @override
   State<SongDetailPage> createState() => _SongDetailPageState();
@@ -22,19 +28,34 @@ class _SongDetailPageState extends State<SongDetailPage> {
   @override
   void initState() {
     super.initState();
-    _pageController = PageController(initialPage: _initialLoopPage);
-    unawaited(NativeBridge.setAudioSpectrumEnabled(false));
+    _pageIndex = (widget.previewStyle ?? widget.model.lyricsPlayerStyle).clamp(
+      0,
+      _playerStyleCount - 1,
+    );
+    _pageController = PageController(
+      initialPage: _initialLoopPage + _pageIndex,
+    );
+    if (widget.previewStyle == null) {
+      unawaited(NativeBridge.setAudioSpectrumEnabled(false));
+    }
     _requestSongDetail(widget.song);
   }
 
   @override
   void dispose() {
-    unawaited(NativeBridge.setAudioSpectrumEnabled(false));
+    if (widget.previewStyle == null) {
+      unawaited(NativeBridge.setAudioSpectrumEnabled(false));
+    }
     _pageController.dispose();
     super.dispose();
   }
 
   void _requestSongDetail(MirrorItem song) {
+    if (widget.previewStyle != null &&
+        widget.model.songDetail != null &&
+        _songKey(widget.model.songDetail!.song) == _songKey(song)) {
+      return;
+    }
     final key = _songKey(song);
     if (key.isEmpty || key == _requestedSongKey) return;
     _requestedSongKey = key;
@@ -98,7 +119,8 @@ class _SongDetailPageState extends State<SongDetailPage> {
             .clamp(160.0, 10000.0)
             .toDouble();
         const normalContentTopPadding = 24.0;
-        const lyricsHeaderHeight = 58.0;
+        final lyricsHeaderHeight =
+            58.0 * max(1, media.textScaler.scale(16) / 16);
         final headerToLyricsGap = isLandscape ? 6.0 : 22.0;
         final listBottomPadding = isLandscape
             ? 0.0
@@ -114,326 +136,322 @@ class _SongDetailPageState extends State<SongDetailPage> {
                     listBottomPadding)
                 .clamp(160.0, safeViewportHeight)
                 .toDouble();
-        final normalFocusedLyricY =
-            toolbarHeight +
-            normalContentTopPadding +
-            lyricsHeaderHeight +
-            headerToLyricsGap +
-            normalPortraitLyricHeight * 0.48;
         return Scaffold(
-          backgroundColor: theme.colorScheme.surface,
-          body: ColoredBox(
-            color: theme.colorScheme.surface,
-            child: SafeArea(
-              left: !isLandscape,
-              top: !isLandscape,
-              right: !isLandscape,
-              bottom: false,
-              child: _SongDetailResponsiveFrame(
-                landscape: isLandscape,
-                immersive: _immersive,
-                toolbarHeight: toolbarHeight,
-                chrome: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 260),
-                  switchInCurve: Curves.easeOutCubic,
-                  switchOutCurve: Curves.easeInCubic,
-                  transitionBuilder: (child, animation) {
-                    return SizeTransition(
-                      sizeFactor: animation,
-                      alignment: Alignment.topCenter,
-                      child: FadeTransition(opacity: animation, child: child),
-                    );
-                  },
-                  child: _immersive
-                      ? const SizedBox.shrink(key: ValueKey('chrome-hidden'))
-                      : Padding(
-                          padding: EdgeInsets.only(
-                            top: isLandscape ? landscapeChromeTop : 0,
-                          ),
-                          child: SizedBox(
-                            key: const ValueKey('chrome-visible'),
-                            height: toolbarHeight,
-                            child: Stack(
-                              fit: StackFit.expand,
-                              children: [
-                                Align(
-                                  alignment: Alignment.centerLeft,
-                                  child: SizedBox.square(
-                                    dimension: toolbarHeight,
-                                    child: IconButton(
-                                      padding: EdgeInsets.zero,
-                                      constraints: const BoxConstraints(),
-                                      style: const ButtonStyle(
-                                        backgroundColor: WidgetStatePropertyAll(
-                                          Colors.transparent,
-                                        ),
-                                        overlayColor: WidgetStatePropertyAll(
-                                          Colors.transparent,
-                                        ),
-                                        shadowColor: WidgetStatePropertyAll(
-                                          Colors.transparent,
-                                        ),
-                                        surfaceTintColor:
-                                            WidgetStatePropertyAll(
-                                              Colors.transparent,
-                                            ),
-                                      ),
-                                      tooltip: '返回',
-                                      onPressed: () =>
-                                          Navigator.of(context).maybePop(),
-                                      icon: const Icon(Icons.arrow_back),
-                                    ),
-                                  ),
-                                ),
-                                if (!isLandscape)
-                                  Center(
-                                    child: AnimatedSwitcher(
-                                      duration: const Duration(
-                                        milliseconds: 220,
-                                      ),
-                                      switchInCurve: Curves.easeOutCubic,
-                                      switchOutCurve: Curves.easeInCubic,
-                                      child: Text(
-                                        _pageIndex == 0 ? '歌词' : '正在播放',
-                                        key: ValueKey('portrait|$_pageIndex'),
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        textAlign: TextAlign.center,
-                                        style: theme.textTheme.titleLarge
-                                            ?.copyWith(
-                                              fontWeight: FontWeight.w800,
-                                            ),
-                                      ),
-                                    ),
-                                  ),
-                                Align(
-                                  alignment: Alignment.centerRight,
-                                  child: Padding(
-                                    padding: EdgeInsets.only(
-                                      right: isLandscape ? 8 : 18,
-                                    ),
-                                    child: _LyricsPageIndicator(
-                                      index: _pageIndex,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                ),
-                content: PageView.builder(
-                  controller: _pageController,
-                  physics: const PageScrollPhysics(
-                    parent: BouncingScrollPhysics(),
+          backgroundColor: widget.model.visualStyle == 'liquid'
+              ? Colors.transparent
+              : theme.colorScheme.surface,
+          body: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (widget.model.visualStyle == 'liquid')
+                Positioned.fill(
+                  child: CoverGlowBackground(
+                    model: widget.model,
+                    coverUrl: widget.model.coverFor(song).isNotEmpty
+                        ? widget.model.coverFor(song)
+                        : player.coverUrl,
                   ),
-                  onPageChanged: (page) {
-                    if (!mounted) return;
-                    final index = _styleIndexForPage(page);
-                    setState(() {
-                      _pageIndex = index;
-                      if (index != 0) _immersive = false;
-                    });
-                    unawaited(NativeBridge.setAudioSpectrumEnabled(false));
-                  },
-                  itemBuilder: (context, page) {
-                    final index = _styleIndexForPage(page);
-                    final Widget child;
-                    if (index == 0) {
-                      child = Column(
-                        key: const ValueKey('lyrics-page'),
-                        children: [
-                          Expanded(
-                            child: GestureDetector(
-                              behavior: HitTestBehavior.opaque,
-                              onTap: _toggleImmersive,
-                              child: LayoutBuilder(
-                                builder: (context, contentConstraints) {
-                                  return TweenAnimationBuilder<double>(
-                                    tween: Tween<double>(
-                                      end: _immersive ? 1 : 0,
-                                    ),
-                                    duration: const Duration(milliseconds: 340),
-                                    curve: Curves.easeInOutCubicEmphasized,
-                                    builder: (context, immersiveProgress, _) {
-                                      final previousLandscapeNormalTitleTop =
-                                          max(
-                                            media.viewPadding.top + 4,
-                                            landscapeChromeTop +
-                                                (toolbarHeight -
-                                                        lyricsHeaderHeight) /
-                                                    2,
-                                          );
-                                      final previousLandscapeImmersiveTitleTop =
-                                          max(
-                                            0.0,
-                                            previousLandscapeNormalTitleTop -
-                                                14,
-                                          );
-                                      final landscapeTitleLineHeight =
-                                          (theme
-                                                  .textTheme
-                                                  .headlineSmall
-                                                  ?.fontSize ??
-                                              24) *
-                                          1.2;
-                                      final landscapeNormalTitleTop =
-                                          previousLandscapeImmersiveTitleTop;
-                                      final landscapeImmersiveTitleTop = max(
-                                        0.0,
-                                        landscapeNormalTitleTop -
-                                            landscapeTitleLineHeight,
-                                      );
-                                      final contentTopPadding = ui.lerpDouble(
-                                        isLandscape
-                                            ? landscapeNormalTitleTop
-                                            : normalContentTopPadding,
-                                        isLandscape
-                                            ? landscapeImmersiveTitleTop
-                                            : 0,
-                                        immersiveProgress,
-                                      )!;
-                                      final effectiveHeaderToLyricsGap =
-                                          isLandscape
-                                          ? ui.lerpDouble(
-                                              headerToLyricsGap,
-                                              0,
-                                              immersiveProgress,
-                                            )!
-                                          : headerToLyricsGap;
-                                      final effectiveLyricHeight = isLandscape
-                                          ? (contentConstraints.maxHeight -
-                                                    contentTopPadding -
-                                                    lyricsHeaderHeight -
-                                                    effectiveHeaderToLyricsGap)
-                                                .clamp(
-                                                  160.0,
-                                                  contentConstraints.maxHeight,
-                                                )
-                                                .toDouble()
-                                          : ui.lerpDouble(
-                                              normalPortraitLyricHeight,
-                                              immersivePortraitLyricHeight,
-                                              immersiveProgress,
-                                            )!;
-                                      final currentFrameTop = isLandscape
-                                          ? 0.0
-                                          : ui.lerpDouble(
-                                              toolbarHeight,
-                                              0,
-                                              immersiveProgress,
-                                            )!;
-                                      final currentLyricsTop =
-                                          currentFrameTop +
-                                          contentTopPadding +
-                                          lyricsHeaderHeight +
-                                          effectiveHeaderToLyricsGap;
-                                      final focusAlignment = isLandscape
-                                          ? 0.48
-                                          : ((normalFocusedLyricY -
-                                                        currentLyricsTop) /
-                                                    effectiveLyricHeight)
-                                                .clamp(0.2, 0.8)
-                                                .toDouble();
-                                      return Padding(
-                                        padding: EdgeInsets.only(
-                                          top: contentTopPadding,
-                                        ),
-                                        child: ListView(
-                                          padding: EdgeInsets.fromLTRB(
-                                            22,
-                                            0,
-                                            22,
-                                            listBottomPadding,
-                                          ),
-                                          children: [
-                                            _AnimatedLyricsHeader(
-                                              song: song,
-                                              landscape: isLandscape,
-                                            ),
-                                            SizedBox(
-                                              height:
-                                                  effectiveHeaderToLyricsGap,
-                                            ),
-                                            if (loading)
-                                              const LoadingPanel(
-                                                text: '正在展开完整歌词',
-                                                framed: false,
-                                              )
-                                            else if (lines.isEmpty)
-                                              const EmptyPanel(
-                                                icon: Icons.lyrics_outlined,
-                                                text: '暂无歌词',
-                                              )
-                                            else if (canScrollLyrics)
-                                              _LyricsEdgeFade(
-                                                child: ScrollingLyrics(
-                                                  lines: timedLines,
-                                                  currentTimeSeconds:
-                                                      player.currentTimeSeconds,
-                                                  height: effectiveLyricHeight,
-                                                  focusAlignment:
-                                                      focusAlignment,
-                                                ),
-                                              )
-                                            else
-                                              _LyricsEdgeFade(
-                                                child: LyricsBlock(
-                                                  lines: lines,
-                                                  framed: false,
-                                                ),
+                ),
+              SafeArea(
+                left: !isLandscape,
+                top: !isLandscape,
+                right: !isLandscape,
+                bottom: false,
+                child: _SongDetailResponsiveFrame(
+                  landscape: isLandscape,
+                  immersive: _immersive,
+                  toolbarHeight: toolbarHeight,
+                  chrome: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 260),
+                    switchInCurve: Curves.easeOutCubic,
+                    switchOutCurve: Curves.easeInCubic,
+                    transitionBuilder: (child, animation) {
+                      return SizeTransition(
+                        sizeFactor: animation,
+                        alignment: Alignment.topCenter,
+                        child: FadeTransition(opacity: animation, child: child),
+                      );
+                    },
+                    child: _immersive
+                        ? const SizedBox.shrink(key: ValueKey('chrome-hidden'))
+                        : Padding(
+                            padding: EdgeInsets.only(
+                              top: isLandscape ? landscapeChromeTop : 0,
+                            ),
+                            child: SizedBox(
+                              key: const ValueKey('chrome-visible'),
+                              height: toolbarHeight,
+                              child: Stack(
+                                fit: StackFit.expand,
+                                children: [
+                                  Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: SizedBox.square(
+                                      dimension: toolbarHeight,
+                                      child: IconButton(
+                                        padding: EdgeInsets.zero,
+                                        constraints: const BoxConstraints(),
+                                        style: const ButtonStyle(
+                                          backgroundColor:
+                                              WidgetStatePropertyAll(
+                                                Colors.transparent,
                                               ),
-                                          ],
+                                          overlayColor: WidgetStatePropertyAll(
+                                            Colors.transparent,
+                                          ),
+                                          shadowColor: WidgetStatePropertyAll(
+                                            Colors.transparent,
+                                          ),
+                                          surfaceTintColor:
+                                              WidgetStatePropertyAll(
+                                                Colors.transparent,
+                                              ),
                                         ),
-                                      );
-                                    },
-                                  );
-                                },
+                                        tooltip: '返回',
+                                        onPressed: () =>
+                                            Navigator.of(context).maybePop(),
+                                        icon: const Icon(Icons.arrow_back),
+                                      ),
+                                    ),
+                                  ),
+                                  Align(
+                                    alignment: Alignment.centerRight,
+                                    child: Padding(
+                                      padding: EdgeInsets.only(
+                                        right: isLandscape ? 8 : 18,
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          _LyricsPageIndicator(
+                                            index: _pageIndex,
+                                          ),
+                                          const SizedBox(width: 8),
+                                          SizedBox.square(
+                                            dimension: 40,
+                                            child: IconButton(
+                                              tooltip: '播放页自定义',
+                                              onPressed: () =>
+                                                  openInterfaceSettings(
+                                                    context,
+                                                    widget.model,
+                                                    playerOnly: true,
+                                                  ),
+                                              icon: const Icon(Icons.more_vert),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           ),
-                          _LyricsPlayerBarTransition(
-                            visible: !_immersive && widget.model.showPlayerBar,
-                            child: RepaintBoundary(
-                              key: const ValueKey(
-                                'integrated-lyrics-player-bar',
-                              ),
-                              child: PlayerBar(
-                                model: widget.model,
-                                canOpenSongDetail: false,
+                  ),
+                  content: PageView.builder(
+                    controller: _pageController,
+                    physics: const PageScrollPhysics(
+                      parent: BouncingScrollPhysics(),
+                    ),
+                    onPageChanged: (page) {
+                      if (!mounted) return;
+                      final index = _styleIndexForPage(page);
+                      setState(() {
+                        _pageIndex = index;
+                        if (index != 0) _immersive = false;
+                      });
+                      if (widget.previewStyle == null) {
+                        unawaited(widget.model.setLyricsPlayerStyle(index));
+                        unawaited(NativeBridge.setAudioSpectrumEnabled(false));
+                      }
+                    },
+                    itemBuilder: (context, page) {
+                      final index = _styleIndexForPage(page);
+                      final Widget child;
+                      if (index == 0) {
+                        child = Column(
+                          key: const ValueKey('lyrics-page'),
+                          children: [
+                            Expanded(
+                              child: GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onTap: _toggleImmersive,
+                                child: LayoutBuilder(
+                                  builder: (context, contentConstraints) {
+                                    return TweenAnimationBuilder<double>(
+                                      tween: Tween<double>(
+                                        end: _immersive ? 1 : 0,
+                                      ),
+                                      duration: const Duration(
+                                        milliseconds: 340,
+                                      ),
+                                      curve: Curves.easeInOutCubicEmphasized,
+                                      builder: (context, immersiveProgress, _) {
+                                        final previousLandscapeNormalTitleTop =
+                                            max(
+                                              media.viewPadding.top + 4,
+                                              landscapeChromeTop +
+                                                  (toolbarHeight -
+                                                          lyricsHeaderHeight) /
+                                                      2,
+                                            );
+                                        final previousLandscapeImmersiveTitleTop =
+                                            max(
+                                              0.0,
+                                              previousLandscapeNormalTitleTop -
+                                                  14,
+                                            );
+                                        final landscapeTitleLineHeight =
+                                            (theme
+                                                    .textTheme
+                                                    .headlineSmall
+                                                    ?.fontSize ??
+                                                24) *
+                                            1.2;
+                                        final landscapeNormalTitleTop =
+                                            previousLandscapeImmersiveTitleTop;
+                                        final landscapeImmersiveTitleTop = max(
+                                          0.0,
+                                          landscapeNormalTitleTop -
+                                              landscapeTitleLineHeight,
+                                        );
+                                        final contentTopPadding = ui.lerpDouble(
+                                          isLandscape
+                                              ? landscapeNormalTitleTop
+                                              : normalContentTopPadding,
+                                          isLandscape
+                                              ? landscapeImmersiveTitleTop
+                                              : 0,
+                                          immersiveProgress,
+                                        )!;
+                                        final effectiveHeaderToLyricsGap =
+                                            isLandscape
+                                            ? ui.lerpDouble(
+                                                headerToLyricsGap,
+                                                0,
+                                                immersiveProgress,
+                                              )!
+                                            : headerToLyricsGap;
+                                        final effectiveLyricHeight = isLandscape
+                                            ? (contentConstraints.maxHeight -
+                                                      contentTopPadding -
+                                                      lyricsHeaderHeight -
+                                                      effectiveHeaderToLyricsGap)
+                                                  .clamp(
+                                                    160.0,
+                                                    contentConstraints
+                                                        .maxHeight,
+                                                  )
+                                                  .toDouble()
+                                            : ui.lerpDouble(
+                                                normalPortraitLyricHeight,
+                                                immersivePortraitLyricHeight,
+                                                immersiveProgress,
+                                              )!;
+                                        return Padding(
+                                          padding: EdgeInsets.only(
+                                            top: contentTopPadding,
+                                          ),
+                                          child: ListView(
+                                            padding: EdgeInsets.fromLTRB(
+                                              22,
+                                              0,
+                                              22,
+                                              listBottomPadding,
+                                            ),
+                                            children: [
+                                              _AnimatedLyricsHeader(
+                                                song: song,
+                                                landscape: isLandscape,
+                                              ),
+                                              SizedBox(
+                                                height:
+                                                    effectiveHeaderToLyricsGap,
+                                              ),
+                                              if (loading)
+                                                const LoadingPanel(
+                                                  text: '正在展开完整歌词',
+                                                  framed: false,
+                                                )
+                                              else if (lines.isEmpty)
+                                                const EmptyPanel(
+                                                  icon: Icons.lyrics_outlined,
+                                                  text: '暂无歌词',
+                                                )
+                                              else if (canScrollLyrics)
+                                                _LyricsEdgeFade(
+                                                  child: ScrollingLyrics(
+                                                    lines: timedLines,
+                                                    currentTimeSeconds: player
+                                                        .currentTimeSeconds,
+                                                    height:
+                                                        effectiveLyricHeight,
+                                                    focusAlignment: 0.25,
+                                                    fontScale: widget
+                                                        .model
+                                                        .playerLyricsFontScale,
+                                                  ),
+                                                )
+                                              else
+                                                _LyricsEdgeFade(
+                                                  child: LyricsBlock(
+                                                    lines: lines,
+                                                    framed: false,
+                                                    fontScale: widget
+                                                        .model
+                                                        .playerLyricsFontScale,
+                                                  ),
+                                                ),
+                                            ],
+                                          ),
+                                        );
+                                      },
+                                    );
+                                  },
+                                ),
                               ),
                             ),
-                          ),
-                        ],
-                      );
-                    } else if (index == 1) {
-                      child = LyricsPlayerView(
-                        key: const ValueKey('player-page'),
-                        model: widget.model,
-                        player: player,
-                        song: song,
-                        lyrics: timedLines,
-                        lyricsLoading: loading,
-                      );
-                    } else {
-                      child = AppleMusicPlayerView(
-                        key: const ValueKey('apple-player-page'),
-                        model: widget.model,
-                        player: player,
-                        song: song,
-                        lyrics: timedLines,
-                        lyricsLoading: loading,
-                      );
-                    }
-                    return _LyricsPageTransition(
-                      controller: _pageController,
-                      pageIndex: page,
-                      child: child,
-                    );
-                  },
+                            _LyricsPlayerBarTransition(
+                              visible:
+                                  !_immersive && widget.model.showPlayerBar,
+                              child: RepaintBoundary(
+                                key: const ValueKey(
+                                  'integrated-lyrics-player-bar',
+                                ),
+                                child: PlayerBar(
+                                  model: widget.model,
+                                  canOpenSongDetail: false,
+                                ),
+                              ),
+                            ),
+                          ],
+                        );
+                      } else if (index == 1) {
+                        child = LyricsPlayerView(
+                          key: const ValueKey('player-page'),
+                          model: widget.model,
+                          player: player,
+                          song: song,
+                          lyrics: timedLines,
+                          lyricsLoading: loading,
+                        );
+                      } else {
+                        child = AppleMusicPlayerView(
+                          key: const ValueKey('apple-player-page'),
+                          model: widget.model,
+                          player: player,
+                          song: song,
+                          lyrics: timedLines,
+                          lyricsLoading: loading,
+                        );
+                      }
+                      return child;
+                    },
+                  ),
                 ),
               ),
-            ),
+            ],
           ),
         );
       },
@@ -477,7 +495,7 @@ class _AnimatedLyricsHeader extends StatelessWidget {
     );
     if (landscape) {
       return SizedBox(
-        height: 58,
+        height: 58 * max(1, MediaQuery.textScalerOf(context).scale(16) / 16),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 70),
           child: content,
@@ -487,7 +505,10 @@ class _AnimatedLyricsHeader extends StatelessWidget {
     // The list viewport clips children translated above its leading edge.
     // Portrait movement is therefore handled by the list's top padding rather
     // than a negative transform, keeping the title fully readable.
-    return SizedBox(height: 58, child: content);
+    return SizedBox(
+      height: 58 * max(1, MediaQuery.textScalerOf(context).scale(16) / 16),
+      child: content,
+    );
   }
 }
 
@@ -543,7 +564,7 @@ class _LyricsPlayerBarTransition extends StatefulWidget {
 class _LyricsPlayerBarTransitionState extends State<_LyricsPlayerBarTransition>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
-  late final Animation<double> _curve;
+  late final CurvedAnimation _curve;
   late final Animation<Offset> _slide;
 
   @override
@@ -551,7 +572,7 @@ class _LyricsPlayerBarTransitionState extends State<_LyricsPlayerBarTransition>
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 300),
+      duration: const Duration(milliseconds: 220),
       value: widget.visible ? 1 : 0,
     );
     _curve = CurvedAnimation(parent: _controller, curve: Curves.easeInOutCubic);
@@ -565,6 +586,10 @@ class _LyricsPlayerBarTransitionState extends State<_LyricsPlayerBarTransition>
   void didUpdateWidget(covariant _LyricsPlayerBarTransition oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.visible == widget.visible) return;
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _controller.value = widget.visible ? 1 : 0;
+      return;
+    }
     if (widget.visible) {
       _controller.forward();
     } else {
@@ -574,6 +599,7 @@ class _LyricsPlayerBarTransitionState extends State<_LyricsPlayerBarTransition>
 
   @override
   void dispose() {
+    _curve.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -582,22 +608,23 @@ class _LyricsPlayerBarTransitionState extends State<_LyricsPlayerBarTransition>
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: _controller,
-      builder: (context, _) {
+      child: ClipRect(
+        child: SizeTransition(
+          sizeFactor: _curve,
+          alignment: Alignment.topCenter,
+          child: SlideTransition(
+            position: _slide,
+            child: FadeTransition(opacity: _curve, child: widget.child),
+          ),
+        ),
+      ),
+      builder: (context, child) {
         if (_controller.isDismissed) {
           return const SizedBox.shrink(
             key: ValueKey('lyrics-player-bar-hidden'),
           );
         }
-        return ClipRect(
-          child: SizeTransition(
-            sizeFactor: _curve,
-            alignment: Alignment.topCenter,
-            child: SlideTransition(
-              position: _slide,
-              child: FadeTransition(opacity: _curve, child: widget.child),
-            ),
-          ),
-        );
+        return child!;
       },
     );
   }
@@ -829,10 +856,16 @@ class _LyricsEdgeFade extends StatelessWidget {
 }
 
 class LyricsBlock extends StatelessWidget {
-  const LyricsBlock({required this.lines, this.framed = true, super.key});
+  const LyricsBlock({
+    required this.lines,
+    this.framed = true,
+    this.fontScale = 1,
+    super.key,
+  });
 
   final List<String> lines;
   final bool framed;
+  final double fontScale;
 
   @override
   Widget build(BuildContext context) {
@@ -855,7 +888,13 @@ class LyricsBlock extends StatelessWidget {
             Text(
               line,
               textAlign: TextAlign.center,
-              style: theme.textTheme.bodyMedium?.copyWith(height: 1.38),
+              style: theme.textTheme.bodyMedium?.copyWith(
+                height: 1.38,
+                fontSize:
+                    (theme.textTheme.bodyMedium?.fontSize ?? 14) *
+                    _responsiveLyricsFontScale(MediaQuery.sizeOf(context)) *
+                    fontScale,
+              ),
             ),
             const SizedBox(height: 4),
           ],
@@ -870,9 +909,11 @@ class ScrollingLyrics extends StatefulWidget {
     required this.lines,
     required this.currentTimeSeconds,
     required this.height,
-    this.focusAlignment = 0.48,
+    this.focusAlignment = 0.25,
+    this.pure = true,
     this.textAlign = TextAlign.center,
     this.horizontalPadding = 30,
+    this.fontScale = 1,
     super.key,
   });
 
@@ -880,8 +921,10 @@ class ScrollingLyrics extends StatefulWidget {
   final double currentTimeSeconds;
   final double height;
   final double focusAlignment;
+  final bool pure;
   final TextAlign textAlign;
   final double horizontalPadding;
+  final double fontScale;
 
   @override
   State<ScrollingLyrics> createState() => _ScrollingLyricsState();
@@ -894,6 +937,7 @@ class _ScrollingLyricsState extends State<ScrollingLyrics> {
   int _lastActiveIndex = -1;
   bool _needsInitialCenter = true;
   bool _isAutoScrolling = false;
+  int _scrollGeneration = 0;
   bool _userBrowsingLyrics = false;
   Timer? _resumeFollowTimer;
   Timer? _geometrySettleTimer;
@@ -956,9 +1000,13 @@ class _ScrollingLyricsState extends State<ScrollingLyrics> {
   }
 
   int _activeIndex() {
+    return _activeIndexFor(widget.lines, widget.currentTimeSeconds);
+  }
+
+  int _activeIndexFor(List<LyricLine> lines, double time) {
     var active = 0;
-    for (var i = 0; i < widget.lines.length; i++) {
-      if (widget.lines[i].time <= widget.currentTimeSeconds + 0.12) {
+    for (var i = 0; i < lines.length; i++) {
+      if (lines[i].time <= time + 0.12) {
         active = i;
       } else {
         break;
@@ -996,7 +1044,6 @@ class _ScrollingLyricsState extends State<ScrollingLyrics> {
       final itemTop =
           itemBox.localToGlobal(Offset.zero).dy -
           viewportBox.localToGlobal(Offset.zero).dy;
-      final itemCenter = itemTop + itemBox.size.height / 2;
       final maxExtent = controller.position.maxScrollExtent;
       final viewportHeight = viewportBox.size.height;
       if (force && maxExtent <= 0 && widget.lines.length > 6) {
@@ -1005,39 +1052,29 @@ class _ScrollingLyricsState extends State<ScrollingLyrics> {
       }
       final target =
           (controller.offset +
-                  itemCenter -
-                  viewportHeight * widget.focusAlignment.clamp(0.2, 0.8))
+                  itemTop -
+                  (viewportHeight - itemBox.size.height) *
+                      widget.focusAlignment.clamp(0.1, 0.8))
               .clamp(0.0, maxExtent)
               .toDouble();
       _needsInitialCenter = false;
-      if ((controller.offset - target).abs() < 2) return;
-      final distance = (controller.offset - target).abs();
-      if ((controller.offset - target).abs() > viewportHeight * 0.8) {
-        _isAutoScrolling = true;
-        controller.jumpTo(target);
-        _isAutoScrolling = false;
-        return;
-      }
+      if ((controller.offset - target).abs() < 0.5) return;
       _isAutoScrolling = true;
+      final scrollGeneration = ++_scrollGeneration;
       unawaited(
         controller
             .animateTo(
               target,
-              duration: _scrollDuration(distance, force: force),
-              curve: Curves.easeInOutCubic,
+              duration: _appleLyricsMotionDuration,
+              curve: _appleLyricsMotionCurve,
             )
             .whenComplete(() {
-              if (mounted) _isAutoScrolling = false;
+              if (mounted && scrollGeneration == _scrollGeneration) {
+                _isAutoScrolling = false;
+              }
             }),
       );
     });
-  }
-
-  Duration _scrollDuration(double distance, {required bool force}) {
-    final normalized = (distance / widget.height).clamp(0.0, 1.0);
-    final base = force ? 240 : 420;
-    final extra = (normalized * 130).round();
-    return Duration(milliseconds: base + extra);
   }
 
   void _beginUserBrowse() {
@@ -1109,7 +1146,7 @@ class _ScrollingLyricsState extends State<ScrollingLyrics> {
         },
         child: SingleChildScrollView(
           controller: controller,
-          physics: const ClampingScrollPhysics(),
+          physics: const BouncingScrollPhysics(),
           padding: EdgeInsets.fromLTRB(
             0,
             max(12, widget.height * widget.focusAlignment - 24),
@@ -1123,8 +1160,12 @@ class _ScrollingLyricsState extends State<ScrollingLyrics> {
                   key: _lineKeys[index],
                   line: widget.lines[index].text,
                   distanceFromActive: (index - active).abs(),
+                  pure: widget.pure,
                   textAlign: widget.textAlign,
                   horizontalPadding: widget.horizontalPadding,
+                  fontScale:
+                      _responsiveLyricsFontScale(MediaQuery.sizeOf(context)) *
+                      widget.fontScale,
                 ),
             ],
           ),
@@ -1138,34 +1179,27 @@ class LyricLineView extends StatelessWidget {
   const LyricLineView({
     required this.line,
     required this.distanceFromActive,
+    this.pure = true,
     this.textAlign = TextAlign.center,
     this.horizontalPadding = 18,
+    this.fontScale = 1,
     super.key,
   });
 
   final String line;
   final int distanceFromActive;
+  final bool pure;
   final TextAlign textAlign;
   final double horizontalPadding;
+  final double fontScale;
 
   double get _emphasis {
     if (distanceFromActive == 0) return 1;
-    if (distanceFromActive == 1) return 0.42;
-    if (distanceFromActive == 2) return 0.18;
     return 0;
   }
 
-  double get _opacity {
-    if (distanceFromActive == 0) return 1;
-    if (distanceFromActive == 1) return 0.72;
-    if (distanceFromActive == 2) return 0.48;
-    return 0.3;
-  }
-
   double get _scale {
-    if (distanceFromActive == 0) return 1.035;
-    if (distanceFromActive == 1) return 0.995;
-    return 0.97;
+    return ui.lerpDouble(0.92, 1.06, _emphasis)!;
   }
 
   @override
@@ -1177,36 +1211,67 @@ class LyricLineView extends StatelessWidget {
       TextAlign.right || TextAlign.end => Alignment.centerRight,
       _ => Alignment.center,
     };
-    final color = Color.lerp(
-      theme.colorScheme.onSurfaceVariant,
-      theme.colorScheme.primary,
-      _emphasis,
-    )!.withAlpha((_opacity * 255).round());
+    final color =
+        Color.lerp(
+          theme.colorScheme.onSurfaceVariant,
+          theme.colorScheme.primary,
+          _emphasis,
+        )!.withValues(
+          alpha: distanceFromActive == 0
+              ? 1
+              : max(0.18, 0.52 - (distanceFromActive - 1) * 0.11),
+        );
+    final split = line.indexOf('\n');
+    final original = split < 0 ? line : line.substring(0, split);
+    final translation = split < 0 ? '' : line.substring(split + 1).trim();
 
     return Padding(
       padding: EdgeInsets.symmetric(vertical: 8, horizontal: horizontalPadding),
       child: AnimatedScale(
         scale: _scale,
         alignment: alignment,
-        duration: const Duration(milliseconds: 320),
-        curve: Curves.easeInOutCubic,
-        child: AnimatedAlign(
+        duration: _appleLyricsMotionDuration,
+        curve: _appleLyricsMotionCurve,
+        child: Align(
           alignment: alignment,
-          duration: const Duration(milliseconds: 280),
-          curve: Curves.easeOutCubic,
           child: AnimatedDefaultTextStyle(
-            duration: const Duration(milliseconds: 320),
-            curve: Curves.easeInOutCubic,
+            duration: _appleLyricsMotionDuration,
+            curve: _appleLyricsMotionCurve,
             style: baseStyle.copyWith(
+              fontSize: (baseStyle.fontSize ?? 16) * fontScale,
               height: 1.25,
-              fontWeight: FontWeight.lerp(
-                FontWeight.w600,
-                FontWeight.w800,
-                _emphasis,
-              ),
+              fontWeight: FontWeight.w700,
               color: color,
             ),
-            child: Text(line, textAlign: textAlign, softWrap: true),
+            child: Column(
+              crossAxisAlignment: switch (textAlign) {
+                TextAlign.left || TextAlign.start => CrossAxisAlignment.start,
+                TextAlign.right || TextAlign.end => CrossAxisAlignment.end,
+                _ => CrossAxisAlignment.center,
+              },
+              children: [
+                Text(original, textAlign: textAlign, softWrap: true),
+                if (translation.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: AnimatedDefaultTextStyle(
+                      duration: _appleLyricsMotionDuration,
+                      curve: _appleLyricsMotionCurve,
+                      style: baseStyle.copyWith(
+                        fontSize: (baseStyle.fontSize ?? 16) * fontScale * 0.84,
+                        color: theme.colorScheme.onSurfaceVariant.withValues(
+                          alpha: distanceFromActive == 0
+                              ? 0.60
+                              : theme.brightness == Brightness.light
+                              ? 0.50
+                              : 0.30,
+                        ),
+                      ),
+                      child: Text(translation, textAlign: textAlign),
+                    ),
+                  ),
+              ],
+            ),
           ),
         ),
       ),

@@ -7,6 +7,8 @@ class SmsLoginApiResult {
     this.code = 0,
     this.accountId = '',
     this.accountName = '',
+    this.avatarUrl = '',
+    this.vipType = 0,
     this.cookies = '',
   });
 
@@ -15,6 +17,8 @@ class SmsLoginApiResult {
   final int code;
   final String accountId;
   final String accountName;
+  final String avatarUrl;
+  final int vipType;
   final String cookies;
 }
 
@@ -301,6 +305,8 @@ class SmsLoginApiClient {
             success: true,
             code: codeValue == 0 ? 200 : codeValue,
             accountId: _stringOf(profile['userId'] ?? profile['id']),
+            avatarUrl: _stringOf(profile['avatarUrl']),
+            vipType: _intOf(profile['vipType']),
             accountName: _stringOf(
               profile['nickname'] ?? profile['userName'] ?? profile['name'],
             ),
@@ -340,6 +346,8 @@ class SmsLoginApiClient {
           success: true,
           code: 200,
           accountId: _stringOf(profile['userId'] ?? profile['id']),
+          avatarUrl: _stringOf(profile['avatarUrl']),
+          vipType: _intOf(profile['vipType']),
           accountName: _stringOf(
             profile['nickname'] ?? profile['userName'] ?? profile['name'],
           ),

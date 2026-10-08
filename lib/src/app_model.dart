@@ -1,12 +1,14 @@
 part of '../main.dart';
 
 class AppModel extends ChangeNotifier {
-  AppModel()
-    : systemDarkMode =
+  AppModel({ListeningHistory? history})
+    : listeningHistory = history ?? ListeningHistory(),
+      systemDarkMode =
           ui.PlatformDispatcher.instance.platformBrightness ==
           ui.Brightness.dark {
     _artworkPipeline = SongArtworkPipeline(this);
     _playlistModule = PlaylistModule(this);
+    networkPolicy.addListener(_handleNetworkPolicyChanged);
   }
 
   static const String _desktopUserAgent =
@@ -16,7 +18,16 @@ class AppModel extends ChangeNotifier {
   WebViewController? webController;
   Timer? _loginTimer;
   Timer? _playerTimer;
+  Future<void>? _playerRefresh;
+  Future<void>? _dailyRefresh;
+  Future<void>? _libraryRefresh;
+  QueuedPlaybackTrack? _queuedTrack;
+  int _queueRevision = 0;
+  bool continuousPlayback = true;
+  int crossfadeSeconds = 3;
+  bool _disposed = false;
   Timer? _searchDebounce;
+  int _searchRequestGeneration = 0;
   Timer? _noticeHideTimer;
   Timer? _themeModeReviewTimer;
   Timer? _dynamicThemeGuardTimer;
@@ -26,6 +37,7 @@ class AppModel extends ChangeNotifier {
   Timer? _currentPlaylistPersistTimer;
   Timer? _playlistRevealPersistTimer;
   Timer? _autoAdvanceWatchdog;
+  Timer? _songDetailFallbackTimer;
   bool _dynamicThemeGuardRefreshInProgress = false;
   int _playRequestId = 0;
   int _loginFlowGeneration = 0;
@@ -42,9 +54,40 @@ class AppModel extends ChangeNotifier {
   final MusicMutationApiClient _musicMutationApiClient =
       MusicMutationApiClient();
   final AppUpdateManager updates = AppUpdateManager();
+  final ListeningHistory listeningHistory;
+  final LyricsCache lyricsCache = LyricsCache();
+  final LocalMusicLibrary localMusic = LocalMusicLibrary();
+  final NetworkPlaybackPolicy networkPolicy = NetworkPlaybackPolicy();
 
   bool ready = false;
   String themeMode = 'system';
+  String visualStyle = 'liquid';
+  int motionLevel = 2;
+  bool iconOnlyNavigation = true;
+  String cardStyle = 'outline';
+  bool cardFrameEnabled = true;
+  bool equalizerEnabled = false;
+  String equalizerPreset = 'flat';
+  List<double> equalizerBands = List<double>.filled(5, 0);
+  Set<String> hiddenControls = {};
+  List<String> playerControlOrder = [
+    'mode',
+    'previous',
+    'play',
+    'next',
+    'favorite',
+    'queue',
+    'volume',
+  ];
+  double coverBlur = 48;
+  double coverLight = 1.2;
+  double glassDepth = 28;
+  double glassBlur = 4;
+  double animationSpeed = 1;
+  double progressGlow = 0.8;
+  double playerButtonScale = 1;
+  double playerLyricsFontScale = 1;
+  bool coverFirstBackground = true;
   bool systemDarkMode;
   bool loginGateVisible = false;
   bool loggedIn = false;
@@ -59,8 +102,16 @@ class AppModel extends ChangeNotifier {
   bool songDetailLoading = false;
   bool queueLoading = false;
   bool playerBarVisible = false;
-  bool allowMixedAudio = false;
-  bool dynamicColorEnabled = false;
+  bool allowMixedAudio = true;
+  bool dynamicColorEnabled = true;
+  bool uiTextFollowsDynamic = true;
+  bool uiIconFollowsDynamic = true;
+  bool uiProgressFollowsDynamic = true;
+  bool volumeNormalizationEnabled = true;
+  Set<String> hiddenRegionText = <String>{};
+  Color uiFixedTextColor = const Color(0xFF14231F);
+  Color uiFixedIconColor = const Color(0xFF126754);
+  Color uiFixedProgressColor = const Color(0xFF126754);
   bool showSongCovers = true;
   bool desktopLyricsEnabled = false;
   bool desktopLyricsLocked = false;
@@ -75,6 +126,7 @@ class AppModel extends ChangeNotifier {
   String pageUrl = 'https://music.163.com/';
   String accountName = '未登录';
   String avatarUrl = '';
+  bool accountVip = false;
   String loginQrData = '';
   String loginQrImage = '';
   String loginMessage = '验证码登录';
@@ -107,6 +159,10 @@ class AppModel extends ChangeNotifier {
   List<String> pinnedPlaylistIds = const [];
   final Map<String, List<MirrorItem>> _playlistSongCache =
       <String, List<MirrorItem>>{};
+  final Map<String, String> _playlistFirstCoverCache = {};
+  final Queue<MirrorItem> _playlistCoverQueue = Queue<MirrorItem>();
+  final Set<String> _playlistCoverRequested = {};
+  int _activePlaylistCoverRequests = 0;
   final Map<String, int> _playlistRevealCounts = <String, int>{};
   Map<String, String> songCoverCache = <String, String>{};
   final Map<String, Future<String>> _songCoverRequests =
@@ -126,9 +182,12 @@ class AppModel extends ChangeNotifier {
   bool _modeSwitching = false;
   bool _restoreLoginOnLoad = false;
   bool _trustSavedLogin = false;
+  bool _awaitingRestoredSessionProbe = false;
+  DateTime? _lastSessionProbeAt;
   bool? _switchAccountBackupLoggedIn;
   String? _switchAccountBackupName;
   String? _switchAccountBackupAvatarUrl;
+  bool _switchAccountBackupVip = false;
   String? _switchAccountBackupCookie;
   bool _nativePlaybackActive = false;
   bool _nativePlaybackPending = false;
@@ -188,7 +247,7 @@ class AppModel extends ChangeNotifier {
 
   bool get showPlayerBar => playerBarVisible && displayPlayer.hasSong;
 
-  bool get accountActive => loggedIn || _hasRealAccountName(accountName);
+  bool get accountActive => loggedIn;
 
   String get visibleAccountName {
     if (_hasRealAccountName(accountName)) return accountName;
@@ -213,232 +272,26 @@ class AppModel extends ChangeNotifier {
     return until != null && DateTime.now().isBefore(until);
   }
 
-  Future<void> init() async {
+  Future<void> init({bool preferencesRestored = false}) async {
     NativeBridge.setSystemCommandHandler(_handleSystemMediaCommand);
-    try {
-      final savedThemeMode = await NativeBridge.getString(
-        'themeMode',
-      ).timeout(const Duration(seconds: 2), onTimeout: () => null);
-      if (savedThemeMode == 'system' ||
-          savedThemeMode == 'light' ||
-          savedThemeMode == 'dark') {
-        themeMode = savedThemeMode!;
-      } else {
-        final legacyDarkMode = await NativeBridge.getString(
-          'darkMode',
-        ).timeout(const Duration(seconds: 2), onTimeout: () => null);
-        themeMode = legacyDarkMode == 'true'
-            ? 'dark'
-            : legacyDarkMode == 'false'
-            ? 'light'
-            : 'system';
-      }
-    } catch (_) {
-      themeMode = 'system';
-    }
-    await _refreshSystemThemeFromNative(notify: false);
-    try {
-      final pinned = await NativeBridge.getString(
-        'pinnedPlaylistIds',
-      ).timeout(const Duration(seconds: 2), onTimeout: () => null);
-      pinnedPlaylistIds = _stringOf(pinned).isEmpty
-          ? const []
-          : _listOf(jsonDecode(pinned!))
-                .map(_stringOf)
-                .where((id) => id.isNotEmpty)
-                .toList(growable: false);
-    } catch (_) {
-      pinnedPlaylistIds = const [];
-    }
-    try {
-      dynamicColorEnabled =
-          await NativeBridge.getString(
-            'dynamicColorEnabled',
-          ).timeout(const Duration(seconds: 2), onTimeout: () => null) ==
-          'true';
-      final savedSeed = await NativeBridge.getString(
-        'themeSeedColor',
-      ).timeout(const Duration(seconds: 2), onTimeout: () => null);
-      final parsedSeed = int.tryParse(savedSeed ?? '');
-      if (dynamicColorEnabled && parsedSeed != null) {
-        themeSeedColor = Color(parsedSeed);
-      }
-    } catch (_) {
-      dynamicColorEnabled = false;
-      themeSeedColor = const Color(0xFF3F7BFF);
-    }
-    try {
-      showSongCovers =
-          await NativeBridge.getString(
-            'showSongCovers',
-          ).timeout(const Duration(seconds: 2), onTimeout: () => null) !=
-          'false';
-    } catch (_) {
-      showSongCovers = true;
-    }
-    try {
-      final savedPlayerStyle = int.tryParse(
-        await NativeBridge.getString(
-              'lyricsPlayerStyle',
-            ).timeout(const Duration(seconds: 2), onTimeout: () => null) ??
-            '',
-      );
-      lyricsPlayerStyle = (savedPlayerStyle ?? 0).clamp(0, 2);
-    } catch (_) {
-      lyricsPlayerStyle = 0;
-    }
-    try {
-      desktopLyricsEnabled =
-          await NativeBridge.getString(
-            'desktopLyricsEnabled',
-          ).timeout(const Duration(seconds: 2), onTimeout: () => null) ==
-          'true';
-      desktopLyricsOpacity =
-          double.tryParse(
-            await NativeBridge.getString(
-                  'desktopLyricsOpacity',
-                ).timeout(const Duration(seconds: 2), onTimeout: () => null) ??
-                '',
-          )?.clamp(0.0, 0.85).toDouble() ??
-          desktopLyricsOpacity;
-      desktopLyricsFontSize =
-          double.tryParse(
-            await NativeBridge.getString(
-                  'desktopLyricsFontSize',
-                ).timeout(const Duration(seconds: 2), onTimeout: () => null) ??
-                '',
-          )?.clamp(14.0, 32.0).toDouble() ??
-          desktopLyricsFontSize;
-      desktopLyricsFontWeight =
-          int.tryParse(
-            await NativeBridge.getString(
-                  'desktopLyricsFontWeight',
-                ).timeout(const Duration(seconds: 2), onTimeout: () => null) ??
-                '',
-          )?.clamp(300, 900).toInt() ??
-          desktopLyricsFontWeight;
-      desktopLyricsLocked =
-          await NativeBridge.getString(
-            'desktopLyricsLocked',
-          ).timeout(const Duration(seconds: 2), onTimeout: () => null) ==
-          'true';
-      desktopLyricsMultiLine =
-          await NativeBridge.getString(
-            'desktopLyricsMultiLine',
-          ).timeout(const Duration(seconds: 2), onTimeout: () => null) ==
-          'true';
-      desktopLyricsCenterLineLocked =
-          await NativeBridge.getString(
-            'desktopLyricsCenterLineLocked',
-          ).timeout(const Duration(seconds: 2), onTimeout: () => null) ==
-          'true';
-      desktopLyricsAutoHideInForeground =
-          await NativeBridge.getString(
-            'desktopLyricsAutoHideInForeground',
-          ).timeout(const Duration(seconds: 2), onTimeout: () => null) ==
-          'true';
-      desktopLyricsAutoHideWhenPaused =
-          await NativeBridge.getString(
-            'desktopLyricsAutoHideWhenPaused',
-          ).timeout(const Duration(seconds: 2), onTimeout: () => null) ==
-          'true';
-      desktopLyricsFollowDynamicColor =
-          await NativeBridge.getString(
-            'desktopLyricsFollowDynamicColor',
-          ).timeout(const Duration(seconds: 2), onTimeout: () => null) ==
-          'true';
-      final savedDesktopLyricsBackground = await NativeBridge.getString(
-        'desktopLyricsBackgroundColor',
-      ).timeout(const Duration(seconds: 2), onTimeout: () => null);
-      final parsedDesktopLyricsBackground = int.tryParse(
-        savedDesktopLyricsBackground ?? '',
-      );
-      if (parsedDesktopLyricsBackground != null) {
-        desktopLyricsBackgroundColor = Color(parsedDesktopLyricsBackground);
-      }
-      final savedDesktopLyricsTextColor = await NativeBridge.getString(
-        'desktopLyricsTextColor',
-      ).timeout(const Duration(seconds: 2), onTimeout: () => null);
-      final parsedDesktopLyricsTextColor = int.tryParse(
-        savedDesktopLyricsTextColor ?? '',
-      );
-      if (parsedDesktopLyricsTextColor != null) {
-        desktopLyricsTextColor = Color(parsedDesktopLyricsTextColor);
-      }
-      await _applyDesktopLyricsStyle();
-      if (desktopLyricsEnabled) {
-        await _restoreDesktopLyricsOverlay();
-      }
-    } catch (_) {}
-    try {
-      final savedVolume = await NativeBridge.getString(
-        'desiredVolume',
-      ).timeout(const Duration(seconds: 2), onTimeout: () => null);
-      final parsedVolume = double.tryParse(savedVolume ?? '');
-      if (parsedVolume != null) {
-        desiredVolume = parsedVolume.clamp(0, 1).toDouble();
-        if (desiredVolume <= 0.02) desiredVolume = 0.7;
-        player = _playerWith(volume: desiredVolume);
-      }
-    } catch (_) {}
-    try {
-      final savedAudioQuality = await NativeBridge.getString(
-        'audioQuality',
-      ).timeout(const Duration(seconds: 2), onTimeout: () => null);
-      if (_validAudioQuality(savedAudioQuality)) {
-        audioQuality = savedAudioQuality!;
-      }
-    } catch (_) {}
-    try {
-      final savedMode = await NativeBridge.getString(
-        'playbackMode',
-      ).timeout(const Duration(seconds: 2), onTimeout: () => null);
-      if (_validPlaybackMode(savedMode)) {
-        player = _playerWith(mode: savedMode);
-      }
-    } catch (_) {}
-    try {
-      allowMixedAudio =
-          await NativeBridge.getString(
-            'allowMixedAudio',
-          ).timeout(const Duration(seconds: 2), onTimeout: () => null) ==
-          'true';
-      unawaited(NativeBridge.setAllowMixedAudio(allowMixedAudio));
-    } catch (_) {}
-    try {
-      rememberLogin =
-          await NativeBridge.getString(
-            'rememberLogin',
-          ).timeout(const Duration(seconds: 2), onTimeout: () => null) !=
-          'false';
-      final savedLoggedIn = await NativeBridge.getString(
-        'savedLoggedIn',
-      ).timeout(const Duration(seconds: 2), onTimeout: () => null);
-      if (rememberLogin && savedLoggedIn == 'true') {
-        loggedIn = true;
-        loginGateVisible = false;
-        loginLoading = false;
-        loginMessage = '正在恢复上次登录状态';
-        status = '正在恢复上次登录状态';
-        accountName =
-            await NativeBridge.getString(
-              'savedAccountName',
-            ).timeout(const Duration(seconds: 2), onTimeout: () => null) ??
-            accountName;
-        avatarUrl =
-            await NativeBridge.getString(
-              'savedAvatarUrl',
-            ).timeout(const Duration(seconds: 2), onTimeout: () => null) ??
-            avatarUrl;
-        _restoreLoginOnLoad = true;
-        _trustSavedLogin = true;
-      }
-    } catch (_) {
-      rememberLogin = true;
-    }
+    if (!preferencesRestored) await _restorePreferences();
     await _restoreSavedAccounts();
     await _restorePlaylistRevealCounts();
     await _restoreContentCache();
+    await Future.wait([
+      listeningHistory.restore(),
+      localMusic.restore(),
+      networkPolicy.restore(fallback: audioQuality),
+      lyricsCache.restore(),
+    ]);
+    try {
+      final limit = int.tryParse(
+        await NativeBridge.getString('coverDiskLimitMb') ?? '',
+      );
+      if (limit != null) {
+        await CoverRuntimeCache.instance.setDiskLimit(limit << 20);
+      }
+    } catch (_) {}
     if (showSongCovers) {
       final startupArtwork = <MirrorItem>[
         ...dailySongs.take(12),
@@ -447,12 +300,16 @@ class AppModel extends ChangeNotifier {
       ];
       unawaited(prepareSongArtworkBatch(startupArtwork));
     }
+    if (_disposed) return;
     ready = true;
     notifyListeners();
     unawaited(updates.initialize());
-    await Future<void>.delayed(const Duration(milliseconds: 700));
+    unawaited(_consumeWidgetAction());
+    await WidgetsBinding.instance.endOfFrame;
+    if (_disposed) return;
     final controller = await _ensureWebController();
     await controller?.loadRequest(Uri.parse('https://music.163.com/'));
+    _startPlayerPolling();
     if (!_restoreLoginOnLoad) {
       unawaited(_probeStartupLoginState());
     }
@@ -460,6 +317,12 @@ class AppModel extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
+    _playRequestId++;
+    localMusic.dispose();
+    networkPolicy.removeListener(_handleNetworkPolicyChanged);
+    networkPolicy.dispose();
+    listeningHistory.dispose();
     updates.dispose();
     _smsLoginApiClient.dispose();
     _loginTimer?.cancel();
@@ -475,6 +338,7 @@ class AppModel extends ChangeNotifier {
     _currentPlaylistPersistTimer?.cancel();
     _playlistRevealPersistTimer?.cancel();
     _autoAdvanceWatchdog?.cancel();
+    _songDetailFallbackTimer?.cancel();
     for (final waiter in _songCoverWaiters) {
       if (!waiter.isCompleted) waiter.complete();
     }
@@ -558,6 +422,14 @@ class AppModel extends ChangeNotifier {
   }
 
   Future<void> refreshVisualStateAfterResume() async {
+    if (accountActive &&
+        (_lastSessionProbeAt == null ||
+            DateTime.now().difference(_lastSessionProbeAt!) >
+                const Duration(minutes: 1))) {
+      _lastSessionProbeAt = DateTime.now();
+      unawaited(_runJavaScript(_sessionProbeScript));
+    }
+    await networkPolicy.refresh();
     await _refreshSystemThemeFromNative(notify: themeMode == 'system');
     if (themeMode != 'system') {
       await _verifyFixedThemeMode(themeMode);
@@ -565,7 +437,7 @@ class AppModel extends ChangeNotifier {
     await _refreshDesktopLyricsAfterResume();
     if (dynamicColorEnabled) {
       if (_nativePlaybackActive) {
-        await _syncNativePlayerState();
+        await refreshPlayerState();
       }
       final syncedFromNative = await _refreshDynamicThemeFromNativePlayback(
         force: true,
@@ -730,6 +602,7 @@ class AppModel extends ChangeNotifier {
     loggedIn = backupLoggedIn;
     accountName = _switchAccountBackupName ?? accountName;
     avatarUrl = _switchAccountBackupAvatarUrl ?? avatarUrl;
+    accountVip = _switchAccountBackupVip;
     _switchAccountBackupLoggedIn = null;
     _switchAccountBackupName = null;
     _switchAccountBackupAvatarUrl = null;
@@ -760,14 +633,17 @@ class AppModel extends ChangeNotifier {
 
   Future<void> _captureSwitchAccountBackup() async {
     if (_switchAccountBackupLoggedIn != null) return;
-    await _persistLoginState();
     _switchAccountBackupLoggedIn = loggedIn;
     _switchAccountBackupName = accountName;
     _switchAccountBackupAvatarUrl = avatarUrl;
+    _switchAccountBackupVip = accountVip;
+    try {
+      await _persistLoginState().timeout(const Duration(seconds: 2));
+    } catch (_) {}
     try {
       _switchAccountBackupCookie = await NativeBridge.getCookies(
         'https://music.163.com/',
-      );
+      ).timeout(const Duration(seconds: 2), onTimeout: () => '');
     } catch (_) {}
   }
 
@@ -817,34 +693,44 @@ class AppModel extends ChangeNotifier {
   }
 
   Future<void> _rememberCurrentAccount({String id = ''}) async {
-    if (!_hasRealAccountName(accountName)) return;
+    final name = accountName;
+    final avatar = avatarUrl;
+    if (!_hasRealAccountName(name)) return;
     var cookie = '';
     try {
-      cookie = await NativeBridge.getCookies('https://music.163.com/');
+      cookie = await NativeBridge.getCookies(
+        'https://music.163.com/',
+      ).timeout(const Duration(seconds: 2), onTimeout: () => '');
     } catch (_) {}
-    final key = id.isNotEmpty ? id : accountName;
+    final key = id.isNotEmpty ? id : name;
     savedAccounts = <SavedAccount>[
       SavedAccount(
         id: id,
-        name: accountName,
-        avatarUrl: avatarUrl,
+        name: name,
+        avatarUrl: avatar,
         cookie: cookie,
         lastUsedAt: DateTime.now().millisecondsSinceEpoch,
       ),
       for (final account in savedAccounts)
-        if (account.key != key && account.name != accountName) account,
+        if (account.key != key && account.name != name) account,
     ].take(8).toList(growable: false);
     await _saveSavedAccounts();
   }
 
   Future<void> _persistLoginState() async {
+    final savedAccountActive = accountActive;
+    final savedAccountName = accountName;
+    final savedAvatarUrl = avatarUrl;
     await _rememberCurrentAccount();
     if (!rememberLogin) return;
     try {
       await NativeBridge.setString('rememberLogin', 'true');
-      await NativeBridge.setString('savedLoggedIn', accountActive.toString());
-      await NativeBridge.setString('savedAccountName', accountName);
-      await NativeBridge.setString('savedAvatarUrl', avatarUrl);
+      await NativeBridge.setString(
+        'savedLoggedIn',
+        savedAccountActive.toString(),
+      );
+      await NativeBridge.setString('savedAccountName', savedAccountName);
+      await NativeBridge.setString('savedAvatarUrl', savedAvatarUrl);
     } catch (_) {}
   }
 
@@ -1258,9 +1144,113 @@ class AppModel extends ChangeNotifier {
   }
 
   String coverFor(MirrorItem item) {
+    if (item.isLocal) return item.imageUrl;
     final cached = songCoverCache[item.id] ?? '';
     if (cached.startsWith('http')) return cached;
     return item.imageUrl.startsWith('http') ? item.imageUrl : '';
+  }
+
+  String playlistCoverFor(MirrorItem playlist) {
+    final songs =
+        _playlistSongCache[playlist.id] ??
+        (selectedLibraryPlaylist?.id == playlist.id ? playlistSongs : null);
+    final first = songs?.firstOrNull;
+    if (first != null) {
+      final cover = coverFor(first);
+      if (cover.isNotEmpty) return cover;
+    }
+    return _playlistFirstCoverCache[playlist.id] ?? '';
+  }
+
+  void queuePlaylistCover(MirrorItem playlist) {
+    if (playlist.id.isEmpty ||
+        _playlistCoverRequested.contains(playlist.id) ||
+        _disposed) {
+      return;
+    }
+    _playlistCoverRequested.add(playlist.id);
+    _playlistCoverQueue.add(playlist);
+    _pumpPlaylistCovers();
+  }
+
+  void _pumpPlaylistCovers() {
+    if (_disposed) {
+      _playlistCoverQueue.clear();
+      return;
+    }
+    while (_activePlaylistCoverRequests < 2 && _playlistCoverQueue.isNotEmpty) {
+      final playlist = _playlistCoverQueue.removeFirst();
+      _activePlaylistCoverRequests++;
+      unawaited(
+        _loadPlaylistFirstCover(playlist).whenComplete(() {
+          _activePlaylistCoverRequests--;
+          _pumpPlaylistCovers();
+        }),
+      );
+    }
+  }
+
+  Future<void> _loadPlaylistFirstCover(MirrorItem playlist) async {
+    if (playlistCoverFor(playlist).isNotEmpty) return;
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 6);
+    try {
+      final cookie = await NativeBridge.getCookies(
+        'https://music.163.com/',
+      ).timeout(const Duration(seconds: 2), onTimeout: () => '');
+      final id = playlist.id;
+      final uris = [
+        Uri.https('music.163.com', '/api/playlist/track/all', {
+          'id': id,
+          'limit': '1',
+          'offset': '0',
+        }),
+        Uri.https('music.163.com', '/api/playlist/detail', {
+          'id': id,
+          'n': '1',
+          's': '0',
+        }),
+      ];
+      for (final uri in uris) {
+        try {
+          final roots = _apiRoots(await _getMusicJson(client, uri, cookie));
+          MirrorItem? first;
+          for (final root in roots) {
+            if (root is List) {
+              first = _apiSongListToItems(root, 'playlist_api').firstOrNull;
+              if (first != null) break;
+            }
+            final map = root is Map ? root : const {};
+            for (final key in const ['songs', 'tracks', 'list']) {
+              first = _apiSongListToItems(
+                _listOf(map[key]),
+                'playlist_api',
+              ).firstOrNull;
+              if (first != null) break;
+            }
+            if (first != null) break;
+          }
+          final firstId = first?.id.isNotEmpty == true
+              ? first!.id
+              : _trackIdsFromApiRoots(roots).firstOrNull;
+          var cover = first == null ? '' : coverFor(first);
+          if (cover.isEmpty && firstId != null) {
+            final detailed = await _fetchSongDetailsDirect(
+              [firstId],
+              client,
+              cookie,
+            );
+            if (detailed.isNotEmpty) cover = coverFor(detailed.first);
+          }
+          if (cover.startsWith('http')) {
+            _playlistFirstCoverCache[id] = cover;
+            if (!_disposed) notifyListeners();
+            return;
+          }
+        } catch (_) {}
+      }
+    } finally {
+      client.close(force: true);
+    }
   }
 
   bool isSongArtworkReady(MirrorItem song) => _artworkPipeline.isReady(song);
@@ -1285,6 +1275,7 @@ class AppModel extends ChangeNotifier {
     List<MirrorItem> songs, {
     bool forceMissingMetadata = false,
   }) {
+    if (!networkPolicy.canPrefetch) return Future.value(false);
     return _artworkPipeline.prepareBatch(
       songs,
       forceMissingMetadata: forceMissingMetadata,
@@ -1292,6 +1283,7 @@ class AppModel extends ChangeNotifier {
   }
 
   Future<String> ensureSongCover(MirrorItem song, {bool force = false}) {
+    if (song.isLocal) return Future.value(song.imageUrl);
     final known = coverFor(song);
     if (!force && known.startsWith('http')) return Future.value(known);
     final songId = song.id.trim();
@@ -2048,11 +2040,7 @@ class AppModel extends ChangeNotifier {
           if (response.statusCode < 200 || response.statusCode >= 300) {
             continue;
           }
-          final chunks = <int>[];
-          await for (final chunk in response) {
-            chunks.addAll(chunk);
-            if (chunks.length > 1024 * 1024) break;
-          }
+          final chunks = await readLimitedResponse(response, maxBytes: 1 << 20);
           if (chunks.isEmpty) continue;
           final color = await _dominantColorFromImageBytes(
             Uint8List.fromList(chunks),
@@ -2327,6 +2315,7 @@ class AppModel extends ChangeNotifier {
     loggedIn = false;
     accountName = '未登录';
     avatarUrl = '';
+    accountVip = false;
     await _useDesktopWebSession();
     final controller = await _ensureWebController();
     await NativeBridge.clearCookies();
@@ -2476,6 +2465,8 @@ class AppModel extends ChangeNotifier {
     if (_hasRealAccountName(result.accountName)) {
       accountName = result.accountName;
     }
+    avatarUrl = _absoluteMusicUrl(result.avatarUrl);
+    accountVip = result.vipType > 0;
     _clearSwitchAccountBackup();
     smsLoginMessage = '登录成功，正在进入应用';
     loginMessage = '登录成功，正在进入应用';
@@ -2497,6 +2488,7 @@ class AppModel extends ChangeNotifier {
     loggedIn = false;
     accountName = '未登录';
     avatarUrl = '';
+    accountVip = false;
     loginLoading = false;
     loginMessage = '正在打开新账号登录';
     _loginTimer?.cancel();
@@ -2529,9 +2521,6 @@ class AppModel extends ChangeNotifier {
         (loginGateBackup?.hasSong ?? false) ||
         _nativePlaybackActive ||
         _nativePlaybackPending;
-    if (!loggedIn && _hasRealAccountName(accountName)) {
-      loggedIn = true;
-    }
     if (!loggedIn) {
       _restoreSwitchAccountBackup();
     }
@@ -2577,6 +2566,7 @@ class AppModel extends ChangeNotifier {
     loggedIn = false;
     accountName = '未登录';
     avatarUrl = '';
+    accountVip = false;
     loginGateVisible = true;
     loginLoading = false;
     loginMessage = '正在打开登录';
@@ -2608,6 +2598,7 @@ class AppModel extends ChangeNotifier {
     loggedIn = false;
     accountName = '未登录';
     avatarUrl = '';
+    accountVip = false;
     loginGateVisible = true;
     loginLoading = false;
     loginMessage = '已退出登录';
@@ -2661,7 +2652,10 @@ class AppModel extends ChangeNotifier {
     return '${value.year}-$month-$day';
   }
 
-  Future<void> loadDailySongs() async {
+  Future<void> loadDailySongs() => _dailyRefresh ??= _loadDailySongs()
+      .whenComplete(() => _dailyRefresh = null);
+
+  Future<void> _loadDailySongs() async {
     dailyLoading = true;
     if (!_nativePlaybackPending) {
       _noticeToken += 1;
@@ -2671,7 +2665,7 @@ class AppModel extends ChangeNotifier {
     status = '正在打开官网每日歌曲推荐';
     notifyListeners();
     await _navigateOfficial('https://music.163.com/#/discover/recommend/taste');
-    await Future<void>.delayed(const Duration(milliseconds: 2200));
+    await _waitForDailyTable();
     await _extractPage('daily');
     if (dailySongs.isEmpty) {
       dailyLoading = true;
@@ -2681,7 +2675,11 @@ class AppModel extends ChangeNotifier {
     }
   }
 
-  Future<void> loadLibrary() async {
+  Future<void> loadLibrary() => _libraryRefresh ??= _loadLibrary().whenComplete(
+    () => _libraryRefresh = null,
+  );
+
+  Future<void> _loadLibrary() async {
     libraryLoading = true;
     if (!_nativePlaybackPending) {
       _noticeToken += 1;
@@ -2690,9 +2688,25 @@ class AppModel extends ChangeNotifier {
     }
     status = '正在打开官网“我的音乐”';
     notifyListeners();
-    await _navigateOfficial('https://music.163.com/#/my/m/music/');
-    await Future<void>.delayed(const Duration(milliseconds: 1600));
     await _extractPage('library');
+  }
+
+  Future<void> _waitForDailyTable() async {
+    final controller = webController;
+    if (controller == null) return;
+    final deadline = DateTime.now().add(const Duration(seconds: 4));
+    while (!_disposed && DateTime.now().isBefore(deadline)) {
+      final ready = await controller.runJavaScriptReturningResult(r'''
+        (function () {
+          var frame = document.querySelector('#g_iframe');
+          var doc = frame && frame.contentDocument || document;
+          return doc.location.href.indexOf('/discover/recommend/taste') >= 0 &&
+            !!doc.querySelector('table a[href*="/song?id="]');
+        })()
+      ''');
+      if (ready == true || ready == 'true') return;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
   }
 
   Future<void> loadPlaylistSongs(MirrorItem playlist) async {
@@ -2820,10 +2834,9 @@ class AppModel extends ChangeNotifier {
       request.headers.set(HttpHeaders.cookieHeader, cookie);
     }
     final response = await request.close().timeout(const Duration(seconds: 8));
-    final body = await response
-        .transform(utf8.decoder)
-        .join()
-        .timeout(const Duration(seconds: 8));
+    final body = utf8.decode(
+      await readLimitedResponse(response, maxBytes: 8 << 20),
+    );
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw HttpException('HTTP ${response.statusCode}', uri: uri);
     }
@@ -3097,6 +3110,17 @@ class AppModel extends ChangeNotifier {
     bool resetSkipGuard = false,
   }) async {
     final requestId = ++_playRequestId;
+    final prepared = _queuedTrack;
+    _queuedTrack = null;
+    _queueRevision++;
+    if (!song.isLocal && !networkPolicy.known) {
+      await networkPolicy.refresh();
+      if (requestId != _playRequestId) return;
+    }
+    if (!song.isLocal && !networkPolicy.canStream) {
+      _showNotice(networkPolicy.connected ? '移动网络播放已关闭' : '网络不可用');
+      return;
+    }
     _artworkTransitionSongIdentity = song.id.isNotEmpty
         ? song.id
         : '${song.title}|${song.subtitle}';
@@ -3136,6 +3160,7 @@ class AppModel extends ChangeNotifier {
       _autoAdvanceSkipGuard = 0;
     }
     _nativePlaybackPending = true;
+    unawaited(NativeBridge.clearQueuedTrack());
     _localPauseRequested = false;
     _playIntentHoldUntil = null;
     _playIntentPlaying = null;
@@ -3171,24 +3196,48 @@ class AppModel extends ChangeNotifier {
       );
     }
     notifyListeners();
-    unawaited(_runJavaScript(_silenceOfficialAudioScript));
+    if (webController != null) {
+      unawaited(_runJavaScript(_silenceOfficialAudioScript));
+    }
     if (requestId != _playRequestId) return;
+    if (song.isLocal) {
+      await _handleSongUrl({
+        'requestId': requestId,
+        'songId': song.id,
+        'url': song.href,
+        'title': song.title,
+        'artist': song.subtitle,
+        'coverUrl': song.imageUrl,
+      });
+      return;
+    }
     final requestTimeout = autoAdvance
         ? const Duration(seconds: 10)
         : const Duration(seconds: 14);
-    final directResult = await _requestSongUrlDirect(song, requestId).timeout(
-      requestTimeout,
-      onTimeout: () => <String, dynamic>{
-        'type': 'songUrl',
-        'requestId': requestId,
-        'songId': song.id,
-        'title': song.title,
-        'artist': song.subtitle,
-        'coverUrl': coverFor(song),
-        'message': '播放地址请求超时',
-        'directApi': true,
-      },
-    );
+    final directResult = prepared != null && prepared.reusableFor(song)
+        ? <String, dynamic>{
+            'requestId': requestId,
+            'songId': song.id,
+            'url': prepared.url,
+            'gainDb': prepared.gainDb,
+            'peak': prepared.peak,
+            'title': song.title,
+            'artist': song.subtitle,
+            'coverUrl': coverFor(song),
+          }
+        : await _requestSongUrlDirect(song, requestId).timeout(
+            requestTimeout,
+            onTimeout: () => <String, dynamic>{
+              'type': 'songUrl',
+              'requestId': requestId,
+              'songId': song.id,
+              'title': song.title,
+              'artist': song.subtitle,
+              'coverUrl': coverFor(song),
+              'message': '播放地址请求超时',
+              'directApi': true,
+            },
+          );
     if (requestId != _playRequestId) return;
     await _handleSongUrl(directResult);
   }
@@ -3214,57 +3263,73 @@ class AppModel extends ChangeNotifier {
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 8)
       ..idleTimeout = const Duration(seconds: 8);
+    var expired = false;
+    final deadline = Timer(const Duration(seconds: 12), () {
+      expired = true;
+      client.close(force: true);
+    });
     try {
       final cookie = await NativeBridge.getCookies(
         'https://music.163.com/',
       ).timeout(const Duration(seconds: 2), onTimeout: () => '');
       var sawVipBlocked = false;
       for (final uri in _songUrlApiUris(songId)) {
+        if (expired) break;
         if (requestId != _playRequestId) {
           return {...resultBase, 'message': '播放请求已取消'};
         }
-        final request = await client
-            .getUrl(uri)
-            .timeout(const Duration(seconds: 8));
-        request.headers.set(HttpHeaders.userAgentHeader, _desktopUserAgent);
-        request.headers.set(HttpHeaders.acceptHeader, 'application/json');
-        request.headers.set(
-          HttpHeaders.refererHeader,
-          'https://music.163.com/',
-        );
-        if (cookie.isNotEmpty) {
-          request.headers.set(HttpHeaders.cookieHeader, cookie);
-        }
-        final response = await request.close().timeout(
-          const Duration(seconds: 10),
-        );
-        final body = await response
-            .transform(utf8.decoder)
-            .join()
-            .timeout(const Duration(seconds: 10));
-        if (response.statusCode < 200 || response.statusCode >= 300) {
-          continue;
-        }
-        final decoded = jsonDecode(body);
-        final vipSignal = _songUrlResponseHasVipSignal(decoded);
-        final playable = _firstPlayableFromSongUrlResponse(
-          decoded,
-          vipMaybe: vipSignal,
-        );
-        if (playable != null) {
-          return {...resultBase, ...playable};
-        }
-        if (vipSignal) {
-          sawVipBlocked = true;
+        try {
+          final request = await client
+              .getUrl(uri)
+              .timeout(const Duration(seconds: 8));
+          request.headers.set(HttpHeaders.userAgentHeader, _desktopUserAgent);
+          request.headers.set(HttpHeaders.acceptHeader, 'application/json');
+          request.headers.set(
+            HttpHeaders.refererHeader,
+            'https://music.163.com/',
+          );
+          if (cookie.isNotEmpty) {
+            request.headers.set(HttpHeaders.cookieHeader, cookie);
+          }
+          final response = await request.close().timeout(
+            const Duration(seconds: 10),
+          );
+          final body = utf8.decode(
+            await readLimitedResponse(
+              response,
+              maxBytes: 2 << 20,
+              timeout: const Duration(seconds: 6),
+            ),
+          );
+          if (response.statusCode < 200 || response.statusCode >= 300) {
+            continue;
+          }
+          final decoded = jsonDecode(body);
+          final vipSignal = _songUrlResponseHasVipSignal(decoded);
+          final playable = _firstPlayableFromSongUrlResponse(
+            decoded,
+            vipMaybe: vipSignal,
+          );
+          if (playable != null) {
+            return {...resultBase, ...playable};
+          }
+          if (vipSignal) {
+            sawVipBlocked = true;
+          }
+        } on IOException {
+          if (!networkPolicy.fallbackQuality) rethrow;
+        } on TimeoutException {
+          if (!networkPolicy.fallbackQuality) rethrow;
         }
       }
       if (sawVipBlocked) {
         return {...resultBase, 'vipBlocked': true, 'message': 'VIP歌曲，需会员播放'};
       }
-      return {...resultBase, 'message': '接口未返回可播放地址'};
+      return {...resultBase, 'message': expired ? '播放地址请求超时' : '接口未返回可播放地址'};
     } catch (error) {
       return {...resultBase, 'message': '播放地址请求失败：$error'};
     } finally {
+      deadline.cancel();
       client.close(force: true);
     }
   }
@@ -3272,14 +3337,18 @@ class AppModel extends ChangeNotifier {
   List<Uri> _songUrlApiUris(String songId) {
     final numericId = int.tryParse(songId);
     final ids = jsonEncode([numericId ?? songId]);
-    final qualityOrder =
+    final quality = networkPolicy.quality;
+    final fallbackOrder =
         <String, List<String>>{
           'standard': ['standard'],
           'higher': ['higher', 'standard'],
           'exhigh': ['exhigh', 'higher', 'standard'],
           'lossless': ['lossless', 'exhigh', 'higher', 'standard'],
-        }[audioQuality] ??
+        }[quality] ??
         const ['higher', 'standard'];
+    final qualityOrder = networkPolicy.fallbackQuality
+        ? fallbackOrder
+        : [quality];
     final now = DateTime.now().millisecondsSinceEpoch.toString();
     final uris = <Uri>[];
     for (final level in qualityOrder) {
@@ -3300,20 +3369,24 @@ class AppModel extends ChangeNotifier {
         }),
       );
     }
-    uris.add(
-      Uri.https('music.163.com', '/api/song/enhance/player/url', {
-        'ids': ids,
-        'br': '320000',
-        'timestamp': now,
-      }),
-    );
-    uris.add(
-      Uri.https('music.163.com', '/api/song/enhance/player/url', {
-        'ids': ids,
-        'br': '128000',
-        'timestamp': now,
-      }),
-    );
+    if (quality != 'standard') {
+      uris.add(
+        Uri.https('music.163.com', '/api/song/enhance/player/url', {
+          'ids': ids,
+          'br': quality == 'higher' ? '192000' : '320000',
+          'timestamp': now,
+        }),
+      );
+    }
+    if (networkPolicy.fallbackQuality || quality == 'standard') {
+      uris.add(
+        Uri.https('music.163.com', '/api/song/enhance/player/url', {
+          'ids': ids,
+          'br': '128000',
+          'timestamp': now,
+        }),
+      );
+    }
     return uris;
   }
 
@@ -3335,6 +3408,8 @@ class AppModel extends ChangeNotifier {
         'url': url,
         'br': _intOf(item['br'] ?? item['bitrate']),
         'level': _stringOf(item['level'] ?? item['type']),
+        'gainDb': _doubleOf(item['gain']),
+        'peak': _doubleOf(item['peak']),
         'vipMaybe': vipMaybe,
         'message': '',
       };
@@ -3437,6 +3512,24 @@ class AppModel extends ChangeNotifier {
     String action,
     Map<String, dynamic> arguments,
   ) async {
+    if (action == 'widgetAction') {
+      if (ready) await _consumeWidgetAction();
+      return;
+    }
+    if (action == 'trackTransition') {
+      await _acceptTrackTransition(arguments);
+      return;
+    }
+    if (action == 'playbackError') {
+      _nativePlaybackActive = false;
+      player = _playerWith(playing: false);
+      _showNotice('播放失败：${_stringOf(arguments['message'])}');
+      return;
+    }
+    if (action == 'networkChanged') {
+      networkPolicy.applyNetwork(arguments);
+      return;
+    }
     if (updates.handleNativeEvent(action, arguments)) return;
     if (action == 'coverColorChanged') {
       if (!dynamicColorEnabled) return;
@@ -3561,17 +3654,24 @@ class AppModel extends ChangeNotifier {
     await refreshPlayerState();
   }
 
+  Future<void> _consumeWidgetAction() async {
+    final action = await NativeBridge.consumeWidgetAction();
+    if (action == null || _disposed) return;
+    await _handleSystemMediaCommand(action.split('.').last.toLowerCase(), {});
+  }
+
   Future<void> openSongDetail(MirrorItem song) async {
+    _songDetailFallbackTimer?.cancel();
     _songDetailRequestKey = song.id.isNotEmpty
         ? song.id
         : (song.href.isNotEmpty ? song.href : song.title);
     final cachedCover = coverFor(song);
     final currentCover = song.id == player.songId ? player.coverUrl : '';
-    final coverUrl = [
-      cachedCover,
-      currentCover,
-      song.imageUrl,
-    ].firstWhere((url) => url.startsWith('http'), orElse: () => '');
+    final coverUrl = [cachedCover, currentCover, song.imageUrl].firstWhere(
+      (url) =>
+          url.startsWith('http') || (song.isLocal && url.startsWith('file://')),
+      orElse: () => '',
+    );
     final detailSong = MirrorItem(
       domId: song.domId,
       kind: song.kind,
@@ -3584,12 +3684,37 @@ class AppModel extends ChangeNotifier {
     songDetail = SongDetail.loading(detailSong);
     status = '正在打开歌曲详情：${song.title}';
     notifyListeners();
+    final requestKey = _songDetailRequestKey;
+    final direct = await _requestSongDetailDirect(
+      detailSong,
+    ).timeout(const Duration(seconds: 8), onTimeout: () => null);
+    if (_disposed || requestKey != _songDetailRequestKey) return;
+    if (direct != null) {
+      songDetail = direct;
+      songDetailLoading = false;
+      queueLyricLines = direct.lyricLines;
+      notifyListeners();
+      return;
+    }
     final payload = jsonEncode({
       'id': song.id,
       'href': song.href,
       'title': song.title,
       'artist': song.subtitle,
       'coverUrl': coverUrl,
+    });
+    // The web fallback reports asynchronously and may never respond on a cold start.
+    _songDetailFallbackTimer = Timer(const Duration(seconds: 8), () {
+      if (_disposed ||
+          requestKey != _songDetailRequestKey ||
+          !songDetailLoading) {
+        return;
+      }
+      songDetail = SongDetail.fromJson(const {}, detailSong);
+      songDetailLoading = false;
+      status = '歌词加载超时，请重新打开重试';
+      _showNotice(status);
+      notifyListeners();
     });
     await _runJavaScript(
       'window.__EMOC_SONG_DETAIL__ = $payload; $_songDetailSnapshotScript',
@@ -3601,8 +3726,11 @@ class AppModel extends ChangeNotifier {
     await openSongDetail(player.asMirrorItem());
   }
 
-  Future<void> refreshPlayerState() async {
-    if (_nativePlaybackPending) return;
+  Future<void> refreshPlayerState() => _playerRefresh ??= _refreshPlayerState()
+      .whenComplete(() => _playerRefresh = null);
+
+  Future<void> _refreshPlayerState() async {
+    if (_disposed || _nativePlaybackPending) return;
     if (_nativePlaybackActive) {
       await _syncNativePlayerState();
       return;
@@ -3612,8 +3740,12 @@ class AppModel extends ChangeNotifier {
   }
 
   Future<void> _syncNativePlayerState() async {
+    final requestId = _playRequestId;
     try {
-      final state = await NativeBridge.playerState();
+      final state = await NativeBridge.playerState().timeout(
+        const Duration(seconds: 2),
+      );
+      if (_disposed || requestId != _playRequestId) return;
       final active = state['active'] == true;
       if (!active) {
         _nativePlaybackActive = false;
@@ -3626,6 +3758,14 @@ class AppModel extends ChangeNotifier {
       final nativePlaying = state['playing'] == true;
       final nativeCoverUrl = _absoluteMusicUrl(_stringOf(state['coverUrl']));
       final nativeSongId = _stringOf(state['songId']);
+      if (nativeSongId != player.songId &&
+          _queuedTrack?.song.id == nativeSongId) {
+        await _acceptTrackTransition({
+          'previousSongId': player.songId,
+          'songId': nativeSongId,
+        });
+        return;
+      }
       final effectiveSongId = nativeSongId.isNotEmpty
           ? nativeSongId
           : player.songId;
@@ -3657,12 +3797,7 @@ class AppModel extends ChangeNotifier {
       final nativeCoverChanged =
           effectiveCoverUrl.startsWith('http') &&
           effectiveCoverUrl != player.coverUrl;
-      final nativeEnded =
-          state['ended'] == true ||
-          (durationMs > 0 &&
-              currentMs >= durationMs - 700 &&
-              !nativePlaying &&
-              player.playing);
+      final nativeEnded = state['ended'] == true;
       if (_localPauseRequested && nativePlaying) {
         unawaited(NativeBridge.pausePlayer());
       }
@@ -3694,7 +3829,9 @@ class AppModel extends ChangeNotifier {
             ? durationMs
             : player.durationMilliseconds,
       );
-      if (effectiveCoverUrl.startsWith('http') && effectiveSongId.isNotEmpty) {
+      if (effectiveCoverUrl.startsWith('http') &&
+          effectiveSongId.isNotEmpty &&
+          songCoverCache[effectiveSongId] != effectiveCoverUrl) {
         songCoverCache = {
           ...songCoverCache,
           effectiveSongId: effectiveCoverUrl,
@@ -3768,7 +3905,11 @@ class AppModel extends ChangeNotifier {
       if (nativeEnded && !_localPauseRequested) {
         _handleNativeTrackEnded();
       }
-    } catch (_) {}
+    } on PlatformException catch (error) {
+      debugPrint('Player state: ${error.code}');
+    } on TimeoutException {
+      debugPrint('Player state timed out');
+    }
   }
 
   bool _playerPresentationChanged(
@@ -3817,7 +3958,6 @@ class AppModel extends ChangeNotifier {
 
   Future<void> _advanceAfterNativeEnd() async {
     try {
-      await Future<void>.delayed(const Duration(milliseconds: 180));
       final targetIndex = _nextSongIndex(naturalEnd: true);
       final target = targetIndex >= 0 ? currentPlaylist[targetIndex] : null;
       if (target == null) {
@@ -3906,7 +4046,7 @@ class AppModel extends ChangeNotifier {
           Duration(milliseconds: shouldPlay ? 650 : 120),
         );
         if (!_playIntentHoldActive || !shouldPlay) {
-          await _syncNativePlayerState();
+          await refreshPlayerState();
         }
         return;
       }
@@ -4006,7 +4146,8 @@ class AppModel extends ChangeNotifier {
       try {
         await NativeBridge.seekPlayer(Duration(milliseconds: targetMs));
       } catch (_) {}
-      await _syncNativePlayerState();
+      unawaited(_refreshTransitionQueue());
+      await refreshPlayerState();
       return;
     }
   }
@@ -4140,6 +4281,7 @@ class AppModel extends ChangeNotifier {
     if (!_validPlaybackMode(mode)) return;
     player = _playerWith(mode: mode);
     notifyListeners();
+    unawaited(_refreshTransitionQueue());
     if (persist) {
       try {
         await NativeBridge.setString('playbackMode', mode);
@@ -4418,7 +4560,10 @@ class AppModel extends ChangeNotifier {
   Future<void> updateSearchQuery(String query) async {
     searchQuery = query;
     _searchDebounce?.cancel();
+    _searchRequestGeneration++;
+    searchResults = const [];
     if (query.trim().isEmpty) {
+      _searchRequestGeneration++;
       searchSuggestions = const [];
       searchResults = const [];
       searchLoading = false;
@@ -4429,12 +4574,13 @@ class AppModel extends ChangeNotifier {
     notifyListeners();
     _searchDebounce = Timer(
       const Duration(milliseconds: 450),
-      () => unawaited(_loadSearchSuggestions(query)),
+      () => unawaited(submitSearch(query, recordHistory: false)),
     );
   }
 
   void clearSearch() {
     _searchDebounce?.cancel();
+    _searchRequestGeneration++;
     searchQuery = '';
     searchSuggestions = const [];
     searchResults = const [];
@@ -4443,9 +4589,12 @@ class AppModel extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> submitSearch(String query) async {
+  Future<void> submitSearch(String query, {bool recordHistory = true}) async {
     final value = query.trim();
     if (value.isEmpty) return;
+    final generation = ++_searchRequestGeneration;
+    _searchDebounce?.cancel();
+    if (recordHistory) unawaited(listeningHistory.recordSearch(value));
     searchQuery = value;
     searchSuggestions = const [];
     searchLoading = true;
@@ -4453,14 +4602,16 @@ class AppModel extends ChangeNotifier {
     notifyListeners();
     final encoded = Uri.encodeComponent(value);
     final controller = await _ensureWebController();
-    if (controller == null) return;
+    if (controller == null || generation != _searchRequestGeneration) return;
     await controller.loadRequest(
       Uri.parse('https://music.163.com/#/search/m/?s=$encoded&type=1'),
     );
     await Future<void>.delayed(const Duration(milliseconds: 1500));
+    if (generation != _searchRequestGeneration) return;
     await _extractPage('search');
-    if (searchResults.isEmpty) {
+    if (generation == _searchRequestGeneration && searchResults.isEmpty) {
       await Future<void>.delayed(const Duration(milliseconds: 900));
+      if (generation != _searchRequestGeneration) return;
       await _extractPage('search');
     }
   }
@@ -4529,10 +4680,9 @@ class AppModel extends ChangeNotifier {
               await Future<void>.delayed(const Duration(milliseconds: 250));
             } else if (_restoreLoginOnLoad) {
               _restoreLoginOnLoad = false;
+              _awaitingRestoredSessionProbe = true;
               await Future<void>.delayed(const Duration(milliseconds: 900));
               await _runJavaScript(_sessionProbeScript);
-              await _extractLoginProjection();
-              await enterApp();
             }
           },
           onWebResourceError: (error) {
@@ -4588,13 +4738,6 @@ class AppModel extends ChangeNotifier {
         return false;
       })();
     ''');
-  }
-
-  Future<void> _loadSearchSuggestions(String query) async {
-    final encoded = jsonEncode(query);
-    await _runJavaScript(
-      'window.__EMOC_SEARCH_QUERY__ = $encoded; $_searchScript',
-    );
   }
 
   Future<void> _extractLoginProjection() async {
@@ -4731,6 +4874,37 @@ class AppModel extends ChangeNotifier {
 
   void _handleLogin(Map<String, dynamic> data) {
     final projectedLoggedIn = data['loggedIn'] == true;
+    final verifiedProbe =
+        data['sessionProbe'] == true && data['verified'] == true;
+    if (verifiedProbe) {
+      _lastSessionProbeAt = DateTime.now();
+      if (!projectedLoggedIn) {
+        final wasLoggedIn = accountActive || _awaitingRestoredSessionProbe;
+        _awaitingRestoredSessionProbe = false;
+        _trustSavedLogin = false;
+        loggedIn = false;
+        accountName = '未登录';
+        avatarUrl = '';
+        accountVip = false;
+        if (wasLoggedIn) {
+          status = loginMessage = '登录已过期，请重新登录';
+          loginGateVisible = true;
+          unawaited(_clearSavedLoginState());
+          _showNotice('登录已过期，请重新登录');
+        }
+        notifyListeners();
+        return;
+      }
+      if (_awaitingRestoredSessionProbe) {
+        _awaitingRestoredSessionProbe = false;
+        unawaited(enterApp());
+      }
+    } else if (data['sessionProbe'] == true) {
+      return;
+    }
+    if (projectedLoggedIn && data.containsKey('vipType')) {
+      accountVip = _intOf(data['vipType']) > 0;
+    }
     if (projectedLoggedIn) {
       loggedIn = true;
       _clearSwitchAccountBackup();
@@ -5219,6 +5393,25 @@ class AppModel extends ChangeNotifier {
   Future<SongDetail?> _requestSongDetailDirect(MirrorItem song) async {
     final songId = song.id.trim();
     if (songId.isEmpty) return null;
+    if (song.isLocal) {
+      return SongDetail.fromJson({
+        'songId': song.id,
+        'title': song.title,
+        'artist': song.subtitle,
+        'coverUrl': song.imageUrl,
+        'lyric': localMusic.lyricsFor(song.id),
+      }, song);
+    }
+    final generation = lyricsCache.generation;
+    final cachedLyrics = lyricsCache.lookup(songId);
+    if (cachedLyrics != null) {
+      return SongDetail.fromJson({
+        ...cachedLyrics,
+        'title': song.title,
+        'artist': song.subtitle,
+        'coverUrl': coverFor(song),
+      }, song);
+    }
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 5)
       ..idleTimeout = const Duration(seconds: 5);
@@ -5246,6 +5439,12 @@ class AppModel extends ChangeNotifier {
           final lyric = _stringOf(_mapOf(decoded['lrc'])['lyric']);
           final translated = _stringOf(_mapOf(decoded['tlyric'])['lyric']);
           if (lyric.isEmpty && translated.isEmpty) continue;
+          unawaited(
+            lyricsCache.put(songId, {
+              'lyric': lyric,
+              'translatedLyric': translated,
+            }, generation),
+          );
           return SongDetail.fromJson({
             'songId': songId,
             'title': song.title,
@@ -5270,13 +5469,17 @@ class AppModel extends ChangeNotifier {
     _playlistRevealCounts.clear();
     _playlistRevealPersistTimer?.cancel();
     songCoverCache = <String, String>{};
-    CoverRuntimeCache.instance.clear();
+    await CoverRuntimeCache.instance.clear();
+    PaintingBinding.instance.imageCache
+      ..clear()
+      ..clearLiveImages();
     _lastSavedPlayerCacheKey = '';
     _lastSavedPlaylistCacheKey = '';
     _dynamicColorCache.clear();
     _clearDynamicColorRequestState();
     _clearNativeDynamicColorAuthority();
     await _clearContentCache();
+    await lyricsCache.clear();
     status = '缓存已清除';
     _showNotice('缓存已清除');
     notifyListeners();
@@ -5504,6 +5707,19 @@ class AppModel extends ChangeNotifier {
     if (requestId > 0 && _activeSnapshotRequests[context] != requestId) {
       _finishSnapshotRequest(requestId);
       return;
+    }
+    if (context == 'search') {
+      final uri = Uri.tryParse(_stringOf(data['url']));
+      final fragment = uri?.fragment ?? '';
+      final capturedQuery = Uri.splitQueryString(
+        fragment.contains('?')
+            ? fragment.substring(fragment.indexOf('?') + 1)
+            : '',
+      )['s'];
+      if (capturedQuery != null && capturedQuery != searchQuery.trim()) {
+        _finishSnapshotRequest(requestId);
+        return;
+      }
     }
     if (data['stale'] == true) {
       final message = _stringOf(data['message']);
@@ -5735,6 +5951,7 @@ class AppModel extends ChangeNotifier {
           pendingSong,
           fallback: _absoluteMusicUrl(_stringOf(data['coverUrl'])),
         );
+        if (pendingSong.isLocal) resolvedCoverUrl = pendingSong.imageUrl;
         if (resolvedCoverUrl.startsWith('http') && resolvedSongId.isNotEmpty) {
           songCoverCache = {
             ...songCoverCache,
@@ -5750,17 +5967,26 @@ class AppModel extends ChangeNotifier {
       if (resolvedCoverUrl.startsWith('http')) {
         unawaited(CoverRuntimeCache.instance.prefetch([resolvedCoverUrl]));
       }
-      await NativeBridge.playUrl(url, player);
+      await NativeBridge.playUrl(
+        url,
+        player,
+        gainDb: _doubleOf(data['gainDb']),
+        peak: _doubleOf(data['peak']),
+      );
       if (requestId > 0 && requestId != _playRequestId) return;
       _localPauseRequested = false;
       await NativeBridge.setPlayerVolume(desiredVolume);
       if (requestId > 0 && requestId != _playRequestId) return;
       player = _playerWith(playing: true);
       _autoAdvanceInProgress = false;
+      if (pendingSong != null) {
+        unawaited(listeningHistory.recordSong(pendingSong));
+      }
       _autoAdvanceWatchdog?.cancel();
       status = '正在播放：${player.title}';
       _clearPendingPlaybackRequest();
       notifyListeners();
+      unawaited(_prepareNextTrack());
       if (desktopLyricsEnabled) {
         unawaited(_ensureDesktopLyricsOverlayActive(forceSync: true));
       }
@@ -5768,7 +5994,7 @@ class AppModel extends ChangeNotifier {
         requestId > 0 ? requestId : _playRequestId,
       );
       if (pendingSong != null) {
-        if (!resolvedCoverUrl.startsWith('http')) {
+        if (!pendingSong.isLocal && !resolvedCoverUrl.startsWith('http')) {
           unawaited(
             _resolveCurrentPlaybackCover(
               requestId: requestId > 0 ? requestId : _playRequestId,
@@ -5859,6 +6085,7 @@ class AppModel extends ChangeNotifier {
       return;
     }
     final fallback = songDetail?.song ?? player.asMirrorItem();
+    _songDetailFallbackTimer?.cancel();
     final detail = SongDetail.fromJson(data, fallback);
     songDetail = detail;
     songDetailLoading = false;
@@ -5961,6 +6188,7 @@ class AppModel extends ChangeNotifier {
 
   @override
   void notifyListeners() {
+    if (_disposed) return;
     if (player.hasSong) {
       _lastPlayerWithSong = player;
       final cacheKey = _playerCacheKey(player);

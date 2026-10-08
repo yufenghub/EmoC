@@ -26,6 +26,7 @@ import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
@@ -33,12 +34,14 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.lang.ref.WeakReference
+import kotlin.math.pow
 
 @UnstableApi
 class MainActivity : FlutterActivity() {
     private var ownedNativeChannel: MethodChannel? = null
     private var ownedSystemMediaController: SystemMediaController? = null
     private var ownedAppUpdateController: AppUpdateController? = null
+    private var localMusicController: LocalMusicController? = null
     private var player: ExoPlayer?
         get() = sharedPlayer
         set(value) { sharedPlayer = value }
@@ -57,6 +60,19 @@ class MainActivity : FlutterActivity() {
     private var playerVolume: Float
         get() = sharedPlayerVolume
         set(value) { sharedPlayerVolume = value }
+    private var volumeNormalizationEnabled: Boolean
+        get() = sharedVolumeNormalizationEnabled
+        set(value) { sharedVolumeNormalizationEnabled = value }
+    private val playbackEqualizer: PlaybackEqualizer
+        get() = sharedPlaybackEqualizer
+
+    private fun normalizedVolume(track: TrackMetadata): Float {
+        if (!volumeNormalizationEnabled || !track.gainDb.isFinite()) return playerVolume
+        val gain = 10.0.pow(track.gainDb.coerceIn(-12.0, 6.0) / 20.0)
+        val peakLimit = if (track.peak.isFinite() && track.peak > 0.0)
+            0.98 / track.peak else 1.0
+        return (playerVolume * gain.coerceAtMost(peakLimit)).toFloat().coerceIn(0f, 1f)
+    }
     private var userPaused: Boolean
         get() = sharedUserPaused
         set(value) { sharedUserPaused = value }
@@ -114,6 +130,7 @@ class MainActivity : FlutterActivity() {
             ?.unregisterAudioRouteWatchers()
         activeActivity = WeakReference(this)
         allowMixedAudio = prefs().getString("allowMixedAudio", "false") == "true"
+        volumeNormalizationEnabled = prefs().getString("volumeNormalizationEnabled", "false") == "true"
         if (desktopLyricsOverlay == null) {
             desktopLyricsOverlay = DesktopLyricsOverlayController(applicationContext)
         }
@@ -143,10 +160,16 @@ class MainActivity : FlutterActivity() {
         super.onStop()
     }
 
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (localMusicController?.onActivityResult(requestCode, resultCode, data) == true) return
+        super.onActivityResult(requestCode, resultCode, data)
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         activeActivity = WeakReference(this)
+        if (intent.hasExtra(PlaybackWidget.EXTRA_ACTION)) notifyFlutter("widgetAction")
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -156,6 +179,11 @@ class MainActivity : FlutterActivity() {
             MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "emoc/native")
         ownedNativeChannel = engineChannel
         nativeChannel = engineChannel
+        if (sharedNetworkMonitor == null) {
+            sharedNetworkMonitor = NetworkStateMonitor(applicationContext) { state ->
+                sharedNativeChannel?.invokeMethod("systemMediaCommand", state + ("action" to "networkChanged"))
+            }.also { it.start() }
+        }
         val mediaController = systemMediaController
             ?: SystemMediaController(applicationContext, mediaSessionCallbacks).also {
                 systemMediaController = it
@@ -166,8 +194,29 @@ class MainActivity : FlutterActivity() {
             notifyFlutter(action, payload)
         }
         ownedAppUpdateController = updateController
+        localMusicController?.close()
+        localMusicController = LocalMusicController(this)
         engineChannel.setMethodCallHandler { call, result ->
+                if (localMusicController?.handle(call, result) == true) return@setMethodCallHandler
                 when (call.method) {
+                    "networkState" -> result.success(sharedNetworkMonitor?.snapshot() ?: emptyMap<String, Any>())
+                    "clearQueuedTrack" -> {
+                        clearQueuedTrack()
+                        result.success(null)
+                    }
+                    "queueNextTrack" -> {
+                        val expected = call.argument<String>("expectedSongId").orEmpty()
+                        val metadata = TrackMetadata(
+                            songId = call.argument<String>("songId").orEmpty(),
+                            title = call.argument<String>("title").orEmpty(),
+                            artist = call.argument<String>("artist").orEmpty(),
+                            coverUrl = call.argument<String>("coverUrl").orEmpty(),
+                            gainDb = call.argument<Number>("gainDb")?.toDouble() ?: 0.0,
+                            peak = call.argument<Number>("peak")?.toDouble() ?: 0.0
+                        )
+                        result.success(queueNextTrack(expected, call.argument<String>("url").orEmpty(),
+                            metadata, (call.argument<Number>("crossfadeMs")?.toLong() ?: 0L).coerceIn(0, 8000)))
+                    }
                     "playUrl" -> {
                         val url = call.argument<String>("url").orEmpty()
                         if (url.isBlank()) {
@@ -177,7 +226,9 @@ class MainActivity : FlutterActivity() {
                                 songId = call.argument<String>("songId").orEmpty(),
                                 title = call.argument<String>("title").orEmpty().ifBlank { "EmoC" },
                                 artist = call.argument<String>("artist").orEmpty().ifBlank { "网易云音乐" },
-                                coverUrl = call.argument<String>("coverUrl").orEmpty()
+                                coverUrl = call.argument<String>("coverUrl").orEmpty(),
+                                gainDb = call.argument<Number>("gainDb")?.toDouble() ?: 0.0,
+                                peak = call.argument<Number>("peak")?.toDouble() ?: 0.0
                             )
                             playUrl(url, metadata, result)
                         }
@@ -243,6 +294,7 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
                     "seekTo" -> {
+                        clearQueuedTrack()
                         val positionMs = call.argument<Int>("positionMs") ?: 0
                         player?.seekTo(positionMs.coerceAtLeast(0).toLong())
                         audioSpectrumDecoder?.seekTo(positionMs.toLong())
@@ -252,8 +304,25 @@ class MainActivity : FlutterActivity() {
                     "setVolume" -> {
                         playerVolume = (call.argument<Double>("volume") ?: 0.7).toFloat()
                             .coerceIn(0f, 1f)
-                        player?.volume = playerVolume
+                        player?.volume = normalizedVolume(currentTrack)
                         result.success(null)
+                    }
+                    "setVolumeNormalization" -> {
+                        volumeNormalizationEnabled = call.argument<Boolean>("value") ?: false
+                        prefs().edit().putString("volumeNormalizationEnabled", volumeNormalizationEnabled.toString()).apply()
+                        player?.volume = normalizedVolume(currentTrack)
+                        result.success(null)
+                    }
+                    "setEqualizer" -> {
+                        val enabled = call.argument<Boolean>("enabled") ?: false
+                        val bands = (call.argument<List<Number>>("bands") ?: emptyList())
+                            .map { it.toDouble() }
+                        try {
+                            playbackEqualizer.configure(enabled, bands, player?.audioSessionId ?: 0)
+                            result.success(null)
+                        } catch (error: Exception) {
+                            result.error("EQUALIZER_UNAVAILABLE", error.message, null)
+                        }
                     }
                     "setAudioSpectrumEnabled" -> {
                         sharedAudioSpectrumEnabled =
@@ -424,9 +493,18 @@ class MainActivity : FlutterActivity() {
                             )
                         }
                     }
+                    "consumeWidgetAction" -> {
+                        result.success(intent.getStringExtra(PlaybackWidget.EXTRA_ACTION))
+                        intent.removeExtra(PlaybackWidget.EXTRA_ACTION)
+                    }
+                    "prefsGetMany" -> {
+                        val values = prefs().all
+                        val keys = call.argument<List<String>>("keys").orEmpty()
+                        result.success(keys.associateWith { values[it]?.toString() })
+                    }
                     "prefsGet" -> {
                         val key = call.argument<String>("key").orEmpty()
-                        result.success(prefs().getString(key, null))
+                        result.success(prefs().all[key]?.toString())
                     }
                     "prefsSet" -> {
                         val key = call.argument<String>("key").orEmpty()
@@ -506,151 +584,166 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun playUrl(
-        url: String,
-        metadata: TrackMetadata,
-        result: MethodChannel.Result?
-    ) {
-        // A transport command can replace the track while the Flutter activity
-        // is stopped. Requesting a runtime permission from that path lets some
-        // Android variants foreground the task. Permission UI is only valid
-        // while the user is already interacting with the app.
-        if (sharedAppInForeground) {
-            ensureNotificationPermission()
+    private fun createPlayer(): ExoPlayer {
+        val renderers = DefaultRenderersFactory(applicationContext).setEnableDecoderFallback(true)
+        return ExoPlayer.Builder(applicationContext, renderers).build().apply {
+            setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
+                .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(), false)
+            volume = normalizedVolume(currentTrack)
+            setWakeMode(C.WAKE_MODE_NETWORK)
         }
-        val generation = playGeneration + 1
-        playGeneration = generation
-        val previousPlayer = player
-        val keepPreviousSystemMedia =
-            previousPlayer != null &&
-                !userPaused &&
-                (previousPlayer.playWhenReady ||
-                    previousPlayer.playbackState == Player.STATE_ENDED)
-        if (keepPreviousSystemMedia) {
-            updateSystemMedia()
-        }
+    }
+
+    private fun mediaSource(url: String, metadata: TrackMetadata): androidx.media3.exoplayer.source.MediaSource {
+        val http = DefaultHttpDataSource.Factory().setUserAgent(USER_AGENT)
+            .setDefaultRequestProperties(requestHeaders()).setAllowCrossProtocolRedirects(true)
+            .setConnectTimeoutMs(12000).setReadTimeoutMs(25000)
+        val item = MediaItem.Builder().setUri(url).setMediaId(metadata.songId).setTag(metadata).build()
+        return ProgressiveMediaSource.Factory(DefaultDataSource.Factory(applicationContext, http))
+            .createMediaSource(item)
+    }
+
+    private fun playUrl(url: String, metadata: TrackMetadata, result: MethodChannel.Result?) {
+        if (sharedAppInForeground) ensureNotificationPermission()
+        playGeneration += 1
+        clearQueuedTrack()
+        sharedPlayResult?.error("PLAY_CANCELLED", "播放请求已取消", null)
+        sharedPlayResult = result
+        stopSpectrumDecoder()
         userPaused = false
         pausedByAudioFocusLoss = false
-        if (playerVolume <= 0.02f) {
-            playerVolume = 0.7f
-        }
-        releasePlayer(
-            clearSystemMedia = !keepPreviousSystemMedia,
-            preserveAudioFocus = keepPreviousSystemMedia
-        )
         currentTrack = metadata
         currentPlaybackUrl = url
-        if (!keepPreviousSystemMedia) {
-            PlaybackKeepAliveService.start(this, currentTrack)
-        }
-
-        var replied = false
-        fun successOnce() {
-            if (!replied) {
-                replied = true
-                result?.success(null)
-            }
-        }
-        fun errorOnce(code: String, message: String) {
-            if (!replied) {
-                replied = true
-                result?.error(code, message, null)
-            }
-        }
-
         try {
             if (!allowMixedAudio && !requestAudioFocus()) {
-                systemMediaController?.cancel()
-                PlaybackKeepAliveService.stop(this)
-                errorOnce("AUDIO_FOCUS_DENIED", "音频焦点被其他应用占用")
+                sharedPlayResult?.error("AUDIO_FOCUS_DENIED", "音频焦点被其他应用占用", null)
+                sharedPlayResult = null
+                releasePlayer()
                 return
             }
-            val renderersFactory = DefaultRenderersFactory(applicationContext)
-            renderersFactory.setEnableDecoderFallback(true)
-            val exoPlayer = ExoPlayer.Builder(applicationContext, renderersFactory).build()
-            player = exoPlayer
+            val current = player ?: createPlayer().also { player = it }
+            sharedPlayerListener?.let { current.removeListener(it) }
+            attachPlayerListener(current)
             playerPrepared = false
-
-            exoPlayer.setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(C.USAGE_MEDIA)
-                    .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
-                    .build(),
-                false
-            )
-            exoPlayer.volume = playerVolume
-            exoPlayer.setWakeMode(C.WAKE_MODE_NETWORK)
-            exoPlayer.playbackParameters = PlaybackParameters(1.0f)
-            var endedNotified = false
-            exoPlayer.addListener(object : Player.Listener {
-                override fun onPlaybackStateChanged(playbackState: Int) {
-                    if (generation != playGeneration) return
-                    if (playbackState == Player.STATE_READY) {
-                        playerPrepared = true
-                        exoPlayer.playbackParameters = PlaybackParameters(1.0f)
-                        if (!userPaused && !exoPlayer.isPlaying) {
-                            exoPlayer.play()
-                        }
-                        PlaybackKeepAliveService.start(this@MainActivity, currentTrack)
-                        updateSystemMedia()
-                        startSpectrumDecoderIfNeeded()
-                        successOnce()
-                    }
-                    if (playbackState == Player.STATE_ENDED) {
-                        updateSystemMedia()
-                        if (!endedNotified) {
-                            endedNotified = true
-                            notifyTrackEndedWithRetries(
-                                generation = generation,
-                                songId = currentTrack.songId
-                            )
-                        }
-                    }
-                }
-
-                override fun onPlayerError(error: PlaybackException) {
-                    if (generation != playGeneration) return
-                    playerPrepared = false
-                    val errorResult = if (replied) null else result
-                    releasePlayer(clearSystemMedia = false)
-                    errorResult?.error(
-                        "PLAYER_ERROR",
-                        "播放器错误：${error.errorCodeName}",
-                        null
-                    )
-                }
-
-                override fun onIsPlayingChanged(isPlaying: Boolean) {
-                    if (generation == playGeneration && isPlaying) {
-                        exoPlayer.playbackParameters = PlaybackParameters(1.0f)
-                        successOnce()
-                    }
-                    if (generation == playGeneration) {
-                        updateSystemMedia()
-                    }
-                }
-            })
-
-            val dataSourceFactory = DefaultHttpDataSource.Factory()
-                .setUserAgent(USER_AGENT)
-                .setDefaultRequestProperties(requestHeaders())
-                .setAllowCrossProtocolRedirects(true)
-                .setConnectTimeoutMs(12000)
-                .setReadTimeoutMs(25000)
-            val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
-                .createMediaSource(MediaItem.fromUri(url))
-            exoPlayer.setMediaSource(mediaSource)
-            exoPlayer.prepare()
-            exoPlayer.playWhenReady = true
+            current.volume = normalizedVolume(metadata)
+            current.setMediaSource(mediaSource(url, metadata))
+            current.prepare()
+            current.playWhenReady = true
+            PlaybackKeepAliveService.start(this, currentTrack)
         } catch (error: Exception) {
-            val errorResult = if (replied) null else result
+            sharedPlayResult?.error("PLAYER_SOURCE_ERROR", "播放地址加载失败：${error.message}", null)
+            sharedPlayResult = null
             releasePlayer(clearSystemMedia = false)
-            errorResult?.error(
-                "PLAYER_SOURCE_ERROR",
-                "播放地址加载失败：${error.message}",
-                null
-            )
         }
+    }
+
+    private fun attachPlayerListener(current: ExoPlayer) {
+        val generation = playGeneration
+        var endedNotified = false
+        val listener = object : Player.Listener {
+            override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                if (current !== player) return
+                runCatching { playbackEqualizer.attach(audioSessionId) }
+            }
+
+            override fun onPlaybackStateChanged(state: Int) {
+                if (generation != playGeneration || current !== player) return
+                if (state == Player.STATE_READY) {
+                    playerPrepared = true
+                    if (!userPaused) current.play()
+                    sharedPlayResult?.success(null)
+                    sharedPlayResult = null
+                    updateSystemMedia()
+                    startSpectrumDecoderIfNeeded()
+                } else if (state == Player.STATE_ENDED) {
+                    // A prepared crossfade owns the hand-off; otherwise Dart advances.
+                    if (sharedCrossfade != null) return
+                    updateSystemMedia()
+                    if (!endedNotified) {
+                        endedNotified = true
+                        notifyTrackEndedWithRetries(generation, currentTrack.songId)
+                    }
+                }
+            }
+
+            override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
+                if (current !== player || reason != Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) return
+                val metadata = item?.localConfiguration?.tag as? TrackMetadata ?: return
+                endedNotified = false
+                val previousId = currentTrack.songId
+                currentTrack = metadata
+                current.volume = normalizedVolume(metadata)
+                currentPlaybackUrl = item.localConfiguration?.uri.toString()
+                stopSpectrumDecoder()
+                updateSystemMedia()
+                startSpectrumDecoderIfNeeded()
+                notifyFlutter("trackTransition", mapOf("previousSongId" to previousId, "songId" to metadata.songId))
+                mainThreadHandler.post {
+                    if (current === player && current.currentMediaItemIndex > 0) {
+                        current.removeMediaItems(0, current.currentMediaItemIndex)
+                    }
+                }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                if (generation != playGeneration || current !== player) return
+                sharedPlayResult?.error("PLAYER_ERROR", "播放器错误：${error.errorCodeName}", null)
+                sharedPlayResult = null
+                releasePlayer(clearSystemMedia = false)
+                notifyFlutter("playbackError", mapOf("message" to error.errorCodeName))
+            }
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (generation != playGeneration || current !== player) return
+                updateSystemMedia()
+            }
+        }
+        sharedPlayerListener = listener
+        current.addListener(listener)
+    }
+
+    private fun clearQueuedTrack() {
+        sharedCrossfade?.cancel()
+        sharedCrossfade = null
+        val current = player ?: return
+        if (current.currentMediaItemIndex + 1 < current.mediaItemCount) {
+            current.removeMediaItems(current.currentMediaItemIndex + 1, current.mediaItemCount)
+        }
+    }
+
+    private fun queueNextTrack(expected: String, url: String, metadata: TrackMetadata, fadeMs: Long): Boolean {
+        val current = player ?: return false
+        if (currentTrack.songId != expected || url.isBlank() || current.playbackState == Player.STATE_ENDED) return false
+        clearQueuedTrack()
+        if (fadeMs == 0L) {
+            current.addMediaSource(mediaSource(url, metadata))
+        } else {
+            val incoming = createPlayer()
+            incoming.setMediaSource(mediaSource(url, metadata))
+            incoming.prepare()
+            sharedCrossfade = PlaybackCrossfade(current, incoming, fadeMs,
+                { normalizedVolume(currentTrack) }, { normalizedVolume(metadata) }, {
+                sharedCrossfade = null
+                if (current.playbackState == Player.STATE_ENDED) {
+                    notifyFlutter("ended", mapOf("songId" to currentTrack.songId))
+                }
+            }) { next ->
+                val previousId = currentTrack.songId
+                sharedCrossfade = null
+                stopSpectrumDecoder()
+                sharedPlayerListener?.let { current.removeListener(it) }
+                player = next
+                currentTrack = metadata
+                currentPlaybackUrl = url
+                playerPrepared = true
+                runCatching { playbackEqualizer.attach(next.audioSessionId) }
+                attachPlayerListener(next)
+                updateSystemMedia()
+                startSpectrumDecoderIfNeeded()
+                notifyFlutter("trackTransition", mapOf("previousSongId" to previousId, "songId" to metadata.songId))
+            }
+        }
+        return true
     }
 
     private fun startSpectrumDecoderIfNeeded() {
@@ -658,6 +751,7 @@ class MainActivity : FlutterActivity() {
         val current = player ?: return
         val url = currentPlaybackUrl
         if (url.isBlank()) return
+        if (!url.startsWith("http")) return
         val existing = audioSpectrumDecoder
         if (existing?.sourceUrl == url) {
             ensureSpectrumClockRunning()
@@ -757,6 +851,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun handleSystemMediaSeek(positionMs: Long) {
+        clearQueuedTrack()
         val targetMs = positionMs.coerceAtLeast(0L)
         player?.seekTo(targetMs)
         audioSpectrumDecoder?.seekTo(targetMs)
@@ -812,6 +907,7 @@ class MainActivity : FlutterActivity() {
         // resolves the next playable item (including VIP skip chains).
         val waitingForNext = ended && !userPaused
         val playing = !userPaused && (current.playWhenReady || waitingForNext)
+        PlaybackWidget.update(this, currentTrack, playing)
         systemMediaController?.update(
             metadata = currentTrack,
             playing = playing,
@@ -838,9 +934,10 @@ class MainActivity : FlutterActivity() {
         durationMs: Long,
         ended: Boolean = false
     ): Map<String, Any> {
+        val transitioning = sharedCrossfade != null && ended && !userPaused
         val state = mutableMapOf<String, Any>(
             "active" to active,
-            "playing" to playing,
+            "playing" to (playing || transitioning),
             "currentMs" to currentMs.coerceAtLeast(0L),
             "durationMs" to durationMs.coerceAtLeast(0L),
             "songId" to currentTrack.songId,
@@ -852,7 +949,7 @@ class MainActivity : FlutterActivity() {
             } else {
                 ""
             },
-            "ended" to ended
+            "ended" to (ended && !transitioning)
         )
         val colorUrl = systemMediaController?.currentCoverColorUrl().orEmpty()
         val colorSongId = systemMediaController?.currentCoverColorSongId().orEmpty()
@@ -881,7 +978,7 @@ class MainActivity : FlutterActivity() {
         val current = player ?: return@OnAudioFocusChangeListener
         when (change) {
             AudioManager.AUDIOFOCUS_GAIN -> {
-                current.volume = playerVolume
+                current.volume = normalizedVolume(currentTrack)
                 if (pausedByAudioFocusLoss && !userPaused) {
                     pausedByAudioFocusLoss = false
                     current.playWhenReady = true
@@ -908,7 +1005,7 @@ class MainActivity : FlutterActivity() {
                 notifyFlutter("audioFocusPaused")
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
-                current.volume = playerVolume * 0.25f
+                current.volume = normalizedVolume(currentTrack) * 0.25f
             }
         }
     }
@@ -971,12 +1068,19 @@ class MainActivity : FlutterActivity() {
         clearSystemMedia: Boolean = true,
         preserveAudioFocus: Boolean = false
     ) {
+        sharedCrossfade?.cancel()
+        sharedCrossfade = null
+        sharedPlayResult?.error("PLAY_CANCELLED", "播放请求已取消", null)
+        sharedPlayResult = null
+        sharedPlayerListener = null
         playerPrepared = false
         pausedByAudioFocusLoss = false
         stopSpectrumDecoder()
+        playbackEqualizer.close()
         player?.release()
         player = null
         currentPlaybackUrl = ""
+        PlaybackWidget.update(this, currentTrack, false)
         if (clearSystemMedia) {
             systemMediaController?.cancel()
             PlaybackKeepAliveService.stop(this)
@@ -1073,8 +1177,10 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        localMusicController?.close()
+        localMusicController = null
         ownedAppUpdateController?.close()
-        ownedAppUpdateController = null
+          ownedAppUpdateController = null
         val isActiveActivity = activeActivity?.get() === this
         if (isActiveActivity && shouldKeepPlaybackAliveOnDestroy()) {
             PlaybackKeepAliveService.start(this, currentTrack)
@@ -1093,6 +1199,8 @@ class MainActivity : FlutterActivity() {
         playGeneration += 1
         releasePlayer()
         unregisterAudioRouteWatchers()
+        sharedNetworkMonitor?.close()
+        sharedNetworkMonitor = null
         desktopLyricsOverlay?.release()
         desktopLyricsOverlay = null
         systemMediaController?.release()
@@ -1106,6 +1214,11 @@ class MainActivity : FlutterActivity() {
     }
 
     companion object {
+        private var sharedPlayerListener: Player.Listener? = null
+        private var sharedPlayResult: MethodChannel.Result? = null
+        private var sharedCrossfade: PlaybackCrossfade? = null
+        fun hasPlaybackSession(): Boolean = sharedNativeChannel != null && sharedPlayer != null
+        private var sharedNetworkMonitor: NetworkStateMonitor? = null
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 16303
         const val USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
@@ -1117,6 +1230,7 @@ class MainActivity : FlutterActivity() {
         // reconnect to the existing player instead of creating a second media
         // session or losing controls for the track that is still playing.
         private var sharedPlayer: ExoPlayer? = null
+        private val sharedPlaybackEqualizer = PlaybackEqualizer()
         private var sharedNativeChannel: MethodChannel? = null
         private var sharedSystemMediaController: SystemMediaController? = null
         private var sharedDesktopLyricsOverlay: DesktopLyricsOverlayController? = null
@@ -1124,6 +1238,7 @@ class MainActivity : FlutterActivity() {
         private var sharedAppInForeground = false
         private var sharedCurrentTrack = TrackMetadata()
         private var sharedPlayerVolume = 0.7f
+        private var sharedVolumeNormalizationEnabled = false
         private var sharedUserPaused = false
         private var sharedPausedByAudioFocusLoss = false
         private var sharedAllowMixedAudio = false

@@ -2,10 +2,123 @@ part of '../main.dart';
 
 const double _songTileHeight = 68;
 
+class SearchFieldSurface extends StatelessWidget {
+  const SearchFieldSurface({required this.child, super.key});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final model = AppScope.maybeOf(context);
+    if (model != null) return AppCardSurface(model: model, child: child);
+    return Material(
+      color: Theme.of(context).cardTheme.color,
+      borderRadius: BorderRadius.circular(8),
+      clipBehavior: Clip.antiAlias,
+      child: child,
+    );
+  }
+}
+
+class AppCardSurface extends StatelessWidget {
+  const AppCardSurface({
+    required this.model,
+    required this.child,
+    this.color,
+    this.outlineColor,
+    super.key,
+  });
+
+  final AppModel model;
+  final Widget child;
+  final Color? color;
+  final Color? outlineColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final outline = model.cardStyle == 'outline';
+    final theme = Theme.of(context);
+    final quietLiquidCard =
+        outline && model.visualStyle == 'liquid' && !model.cardFrameEnabled;
+    final material = Material(
+      color: quietLiquidCard
+          ? Color.alphaBlend(
+              outlineColor ?? Colors.transparent,
+              (theme.cardTheme.color ?? theme.colorScheme.surface).withValues(
+                alpha: 0.18,
+              ),
+            )
+          : outline
+          ? (outlineColor ?? Colors.transparent)
+          : (color ?? theme.cardTheme.color),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: outline && model.visualStyle != 'liquid' && model.cardFrameEnabled
+            ? BorderSide(
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.22),
+              )
+            : BorderSide.none,
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: child,
+    );
+    if (!outline || model.visualStyle != 'liquid' || !model.cardFrameEnabled) {
+      return material;
+    }
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: LiquidSurface(model: model, useOwnLayer: false, child: material),
+    );
+  }
+}
+
+final ValueNotifier<int> _secondaryPageDepth = ValueNotifier<int>(0);
+
+Future<T?> openAppPage<T>(BuildContext context, Widget page) async {
+  _secondaryPageDepth.value++;
+  try {
+    return await Navigator.of(context).push<T>(
+      PageRouteBuilder<T>(
+        opaque: false,
+        pageBuilder: (routeContext, _, _) {
+          final model = AppScope.of(routeContext);
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              ColoredBox(color: Theme.of(routeContext).colorScheme.surface),
+              if (model.visualStyle == 'liquid' && page is! SongDetailPage)
+                AlbumFlowBackground(model: model),
+              page,
+            ],
+          );
+        },
+        transitionDuration: const Duration(milliseconds: 300),
+        reverseTransitionDuration: const Duration(milliseconds: 230),
+        transitionsBuilder: (_, animation, _, child) => FadeTransition(
+          opacity: CurvedAnimation(
+            parent: animation,
+            curve: Curves.easeOutCubic,
+          ),
+          child: SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0.025, 0),
+              end: Offset.zero,
+            ).animate(animation),
+            child: child,
+          ),
+        ),
+      ),
+    );
+  } finally {
+    _secondaryPageDepth.value--;
+  }
+}
+
 class PageFrame extends StatelessWidget {
   const PageFrame({
     required this.title,
-    required this.children,
+    this.children = const [],
+    this.slivers,
     this.subtitle = '',
     this.trailing,
     this.onRefresh,
@@ -17,48 +130,74 @@ class PageFrame extends StatelessWidget {
   final Widget? trailing;
   final Future<void> Function()? onRefresh;
   final List<Widget> children;
+  final List<Widget>? slivers;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final content = ListView(
-      physics: const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.fromLTRB(20, 28, 20, 28),
+    final model = AppScope.of(context);
+    final scope = switch (title) {
+      '首页' => 'home',
+      '歌单' => 'library',
+      '我的' => 'settings',
+      _ => '',
+    };
+    final showTitle = scope.isEmpty || model.regionTextVisible('$scope.title');
+    final header = Row(
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: theme.textTheme.headlineMedium?.copyWith(
-                      fontWeight: FontWeight.w900,
-                    ),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (showTitle)
+                Text(
+                  title,
+                  style: theme.textTheme.headlineMedium?.copyWith(
+                    fontWeight: FontWeight.w900,
                   ),
-                  if (subtitle.isNotEmpty) ...[
-                    const SizedBox(height: 6),
-                    Text(
-                      subtitle,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            ?trailing,
-          ],
+                ),
+              if (subtitle.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(
+                  subtitle,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
-        const SizedBox(height: 20),
-        ...children,
+        ?trailing,
       ],
     );
+    final content = slivers == null
+        ? ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(20, 28, 20, 28),
+            children: [
+              header,
+              if (showTitle) const SizedBox(height: 20),
+              ...children,
+            ],
+          )
+        : CustomScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            slivers: [
+              SliverPadding(
+                padding: EdgeInsets.fromLTRB(20, 28, 20, showTitle ? 20 : 0),
+                sliver: SliverToBoxAdapter(child: header),
+              ),
+              ...slivers!,
+              const SliverToBoxAdapter(child: SizedBox(height: 28)),
+            ],
+          );
     if (onRefresh == null) return content;
+    if (model.visualStyle == 'liquid') {
+      return _LiquidRefreshIndicator(onRefresh: onRefresh!, child: content);
+    }
     return RefreshIndicator(
       edgeOffset: 4,
       displacement: 30,
@@ -67,6 +206,137 @@ class PageFrame extends StatelessWidget {
       backgroundColor: theme.colorScheme.surfaceContainerHigh,
       onRefresh: onRefresh!,
       child: content,
+    );
+  }
+}
+
+class _LiquidRefreshIndicator extends StatefulWidget {
+  const _LiquidRefreshIndicator({required this.onRefresh, required this.child});
+
+  final Future<void> Function() onRefresh;
+  final Widget child;
+
+  @override
+  State<_LiquidRefreshIndicator> createState() =>
+      _LiquidRefreshIndicatorState();
+}
+
+class _LiquidRefreshIndicatorState extends State<_LiquidRefreshIndicator> {
+  RefreshIndicatorStatus? _status;
+  bool _pullingDown = false;
+  double _pullDistance = 0;
+  Timer? _dismissTimer;
+
+  @override
+  void dispose() {
+    _dismissTimer?.cancel();
+    super.dispose();
+  }
+
+  void _onStatusChange(RefreshIndicatorStatus? status) {
+    if (!mounted) return;
+    _dismissTimer?.cancel();
+    setState(() {
+      _status = status;
+      if (status == null) {
+        _pullingDown = false;
+        _pullDistance = 0;
+      }
+    });
+    if (status == RefreshIndicatorStatus.done ||
+        status == RefreshIndicatorStatus.canceled) {
+      _scheduleDismiss();
+    }
+  }
+
+  bool _onScroll(ScrollNotification notification) {
+    final details = switch (notification) {
+      ScrollUpdateNotification update => update.dragDetails,
+      OverscrollNotification overscroll => overscroll.dragDetails,
+      _ => null,
+    };
+    if (details != null && notification.metrics.extentBefore == 0) {
+      final pullingDown = details.delta.dy > 0;
+      final distance = (_pullDistance + details.delta.dy).clamp(0.0, 72.0);
+      if (pullingDown != _pullingDown ||
+          (distance - _pullDistance).abs() >= 1) {
+        setState(() {
+          _pullingDown = pullingDown;
+          _pullDistance = distance;
+        });
+      }
+    }
+    return false;
+  }
+
+  void _scheduleDismiss() {
+    _dismissTimer?.cancel();
+    _dismissTimer = Timer(const Duration(milliseconds: 450), () {
+      if (mounted) setState(() => _status = null);
+    });
+  }
+
+  Future<void> _refresh() async {
+    try {
+      await widget.onRefresh();
+    } finally {
+      if (mounted) _scheduleDismiss();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final active =
+        _status == RefreshIndicatorStatus.armed ||
+        _status == RefreshIndicatorStatus.snap ||
+        _status == RefreshIndicatorStatus.refresh ||
+        (_status == RefreshIndicatorStatus.drag && _pullingDown);
+    final dragging = _status == RefreshIndicatorStatus.drag;
+    final top = active
+        ? dragging
+              ? -38 + _pullDistance * (50 / 72)
+              : 12.0
+        : -38.0;
+    return Stack(
+      children: [
+        NotificationListener<ScrollNotification>(
+          onNotification: _onScroll,
+          child: RefreshIndicator.noSpinner(
+            onRefresh: _refresh,
+            onStatusChange: _onStatusChange,
+            child: widget.child,
+          ),
+        ),
+        if (_status != null)
+          AnimatedPositioned(
+            duration: dragging
+                ? const Duration(milliseconds: 60)
+                : const Duration(milliseconds: 250),
+            curve: Curves.easeOutCubic,
+            top: top,
+            left: 0,
+            right: 0,
+            child: IgnorePointer(
+              child: AnimatedOpacity(
+                duration: const Duration(milliseconds: 250),
+                opacity: active ? 1 : 0,
+                child: Center(
+                  child: LiquidSurface(
+                    model: AppScope.of(context),
+                    borderRadius: 100,
+                    child: const Padding(
+                      padding: EdgeInsets.all(11),
+                      child: SizedBox.square(
+                        dimension: 22,
+                        child: CircularProgressIndicator(strokeWidth: 2.4),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 }
@@ -80,6 +350,11 @@ class SectionHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final model = AppScope.of(context);
+    final scope = title == '我的音乐' ? 'library' : 'home';
+    if (!model.regionTextVisible('$scope.sections')) {
+      return const SizedBox.shrink();
+    }
     return Row(
       children: [
         Expanded(
@@ -112,21 +387,72 @@ class SongList extends StatefulWidget {
   State<SongList> createState() => _SongListState();
 }
 
+class SliverSongList extends StatelessWidget {
+  const SliverSongList({
+    required this.songs,
+    required this.loading,
+    this.emptyText = '无歌曲',
+    super.key,
+  });
+
+  final List<MirrorItem> songs;
+  final bool loading;
+  final String emptyText;
+
+  @override
+  Widget build(BuildContext context) {
+    if (songs.isEmpty && !loading) {
+      return SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        sliver: SliverToBoxAdapter(
+          child: EmptyPanel(icon: Icons.music_off, text: emptyText),
+        ),
+      );
+    }
+    return SliverPadding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      sliver: SliverList.builder(
+        itemCount: songs.isEmpty ? 8 : songs.length,
+        addAutomaticKeepAlives: false,
+        addRepaintBoundaries: true,
+        itemBuilder: (context, index) => Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: songs.isEmpty
+              ? const SongPlaceholderTile()
+              : PreparedSongTile(
+                  key: ValueKey(
+                    'song-${songs[index].id}-${songs[index].title}-${songs[index].href}',
+                  ),
+                  song: songs[index],
+                  sourceList: songs,
+                  sourceIndex: index,
+                ),
+        ),
+      ),
+    );
+  }
+}
+
 class _SongListState extends State<SongList> {
-  String _scheduledSignature = '';
+  List<MirrorItem>? _scheduledSongs;
+  bool? _scheduledCovers;
 
   void _scheduleArtworkPreload(AppModel model) {
-    final signature = [
-      model.showSongCovers,
-      widget.songs.length,
-      for (final song in widget.songs) _songArtworkIdentity(song),
-    ].join('|');
-    if (_scheduledSignature == signature) return;
-    _scheduledSignature = signature;
+    if (identical(_scheduledSongs, widget.songs) &&
+        _scheduledCovers == model.showSongCovers) {
+      return;
+    }
+    _scheduledSongs = widget.songs;
+    _scheduledCovers = model.showSongCovers;
     if (!model.showSongCovers || widget.songs.isEmpty) return;
+    final songs = widget.songs;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _scheduledSignature != signature) return;
-      unawaited(model.prepareSongArtworkBatch(widget.songs));
+      if (!mounted ||
+          !identical(_scheduledSongs, songs) ||
+          !model.showSongCovers) {
+        return;
+      }
+      unawaited(model.prepareSongArtworkBatch(songs));
     });
   }
 
@@ -166,45 +492,47 @@ class SongPlaceholderTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final model = AppScope.of(context);
     return SizedBox(
       height: _songTileHeight,
-      child: Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: theme.cardTheme.color,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            Container(
-              width: 38,
-              height: 38,
-              decoration: BoxDecoration(
-                color: theme.colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(8),
+      child: AppCardSurface(
+        model: model,
+        color: theme.cardTheme.color,
+        outlineColor: Colors.transparent,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(
+                  Icons.music_note,
+                  size: 20,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
               ),
-              child: Icon(
-                Icons.music_note,
-                size: 20,
-                color: theme.colorScheme.onSurfaceVariant,
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const _SkeletonLine(widthFactor: 0.55),
+                    const SizedBox(height: 7),
+                    const _SkeletonLine(widthFactor: 0.42, muted: true),
+                  ],
+                ),
               ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const _SkeletonLine(widthFactor: 0.55),
-                  const SizedBox(height: 7),
-                  const _SkeletonLine(widthFactor: 0.42, muted: true),
-                ],
-              ),
-            ),
-            const SizedBox(width: 8),
-            Icon(Icons.play_arrow, color: theme.colorScheme.onSurfaceVariant),
-          ],
+              const SizedBox(width: 8),
+              Icon(Icons.play_arrow, color: theme.colorScheme.onSurfaceVariant),
+            ],
+          ),
         ),
       ),
     );
@@ -349,10 +677,12 @@ class SongTile extends StatelessWidget {
     }
     return SizedBox(
       height: _songTileHeight,
-      child: Material(
+      child: AppCardSurface(
+        model: model,
         color: tileColor,
-        borderRadius: BorderRadius.circular(8),
-        clipBehavior: Clip.antiAlias,
+        outlineColor: active
+            ? activeColor.withValues(alpha: 0.1)
+            : Colors.transparent,
         child: InkWell(
           onTap: () => model.clickSong(
             song,
@@ -518,40 +848,45 @@ class PlaylistPlaceholderCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: theme.cardTheme.color,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 44,
-            height: 44,
-            decoration: BoxDecoration(
-              color: theme.colorScheme.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(8),
+    final model = AppScope.of(context);
+    return AppCardSurface(
+      model: model,
+      color: theme.cardTheme.color,
+      outlineColor: Colors.transparent,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(
+                Icons.queue_music,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
             ),
-            child: Icon(
-              Icons.queue_music,
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const _SkeletonLine(widthFactor: 0.62),
+                  const SizedBox(height: 7),
+                  const _SkeletonLine(widthFactor: 0.38, muted: true),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Icon(
+              Icons.chevron_right,
               color: theme.colorScheme.onSurfaceVariant,
             ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const _SkeletonLine(widthFactor: 0.62),
-                const SizedBox(height: 7),
-                const _SkeletonLine(widthFactor: 0.38, muted: true),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          Icon(Icons.chevron_right, color: theme.colorScheme.onSurfaceVariant),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -584,20 +919,47 @@ class _SkeletonLine extends StatelessWidget {
   }
 }
 
-class PlaylistCard extends StatelessWidget {
+class PlaylistCard extends StatefulWidget {
   const PlaylistCard({required this.playlist, super.key});
 
   final MirrorItem playlist;
 
   @override
+  State<PlaylistCard> createState() => _PlaylistCardState();
+}
+
+class _PlaylistCardState extends State<PlaylistCard> {
+  bool _queuedCover = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_queuedCover) return;
+    _queuedCover = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) AppScope.of(context).queuePlaylistCover(widget.playlist);
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant PlaylistCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.playlist.id != widget.playlist.id) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) AppScope.of(context).queuePlaylistCover(widget.playlist);
+      });
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final model = AppScope.of(context);
     final theme = Theme.of(context);
+    final playlist = widget.playlist;
     final pinned = model.isPlaylistPinned(playlist);
-    return Material(
-      color: theme.cardTheme.color,
-      borderRadius: BorderRadius.circular(8),
-      clipBehavior: Clip.antiAlias,
+    final cover = model.playlistCoverFor(playlist);
+    return AppCardSurface(
+      model: model,
       child: InkWell(
         onTap: () => model.openLibraryPlaylist(playlist),
         onLongPress: () => _openPlaylistActionSheet(context, model, playlist),
@@ -612,10 +974,20 @@ class PlaylistCard extends StatelessWidget {
                   color: theme.colorScheme.surfaceContainerHighest,
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: Icon(
-                  playlist.kind == 'liked' ? Icons.favorite : Icons.queue_music,
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
+                clipBehavior: Clip.antiAlias,
+                child: cover.isNotEmpty
+                    ? CoverImage(
+                        url: cover,
+                        identity: 'playlist-${playlist.id}',
+                        preferredSize: 120,
+                        decodeSize: 88,
+                      )
+                    : Icon(
+                        playlist.kind == 'liked'
+                            ? Icons.favorite
+                            : Icons.queue_music,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
               ),
               const SizedBox(width: 12),
               Expanded(
@@ -851,10 +1223,12 @@ class _CoverImageState extends State<CoverImage> {
     _staleHoldTimer?.cancel();
     _externalRetryTimer?.cancel();
     _loadGeneration += 1;
-    _candidates = _coverImageCandidates(
-      widget.url,
-      preferredSize: widget.preferredSize,
-    );
+    _candidates = widget.url.startsWith('file://')
+        ? [widget.url]
+        : _coverImageCandidates(
+            widget.url,
+            preferredSize: widget.preferredSize,
+          );
     _decodeFailures.clear();
     if (!keepPrevious) {
       _bytes = null;
@@ -892,6 +1266,33 @@ class _CoverImageState extends State<CoverImage> {
   }
 
   void _startLoad() {
+    if (widget.url.startsWith('file://')) {
+      if (_decodeFailures.contains(widget.url)) return;
+      final generation = ++_loadGeneration;
+      unawaited(() async {
+        try {
+          final file = File.fromUri(Uri.parse(widget.url));
+          if (await file.length() > 3 << 20) {
+            throw const FileSystemException('Cover too large');
+          }
+          final bytes = await file.readAsBytes().timeout(
+            const Duration(seconds: 3),
+          );
+          if (!mounted || generation != _loadGeneration) return;
+          setState(() {
+            _bytes = bytes;
+            _loadedUrl = widget.url;
+          });
+        } catch (_) {
+          if (!mounted || generation != _loadGeneration) return;
+          setState(() {
+            _bytes = null;
+            _loadedUrl = '';
+          });
+        }
+      }());
+      return;
+    }
     final available = _candidates
         .where((url) => !_decodeFailures.contains(url))
         .toList(growable: false);
@@ -1061,6 +1462,7 @@ class SettingsTile extends StatelessWidget {
     required this.title,
     required this.trailing,
     this.subtitle,
+    this.onTap,
     super.key,
   });
 
@@ -1068,47 +1470,60 @@ class SettingsTile extends StatelessWidget {
   final String title;
   final String? subtitle;
   final Widget trailing;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: theme.cardTheme.color,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        children: [
-          Icon(icon, color: theme.colorScheme.primary),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+    final showLabels = AppScope.of(
+      context,
+    ).regionTextVisible('settings.labels');
+    return AppCardSurface(
+      model: AppScope.of(context),
+      child: InkWell(
+        onTap: onTap,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 72),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            child: Row(
               children: [
-                Text(
-                  title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontWeight: FontWeight.w800),
-                ),
-                if (subtitle != null && subtitle!.isNotEmpty) ...[
-                  const SizedBox(height: 4),
-                  Text(
-                    subtitle!,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
+                Icon(icon, color: theme.colorScheme.primary),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      if (showLabels)
+                        Text(
+                          title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                      if (showLabels &&
+                          subtitle != null &&
+                          subtitle!.isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          subtitle!,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
-                ],
+                ),
+                const SizedBox(width: 12),
+                trailing,
               ],
             ),
           ),
-          const SizedBox(width: 12),
-          trailing,
-        ],
+        ),
       ),
     );
   }

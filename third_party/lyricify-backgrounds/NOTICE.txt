@@ -1,0 +1,8 @@
+Portions of shaders/album_flow.frag are adapted from Lyricify-Backgrounds.
+Upstream: https://github.com/WXRIW/Lyricify-Backgrounds
+Revision: bdd31b5c5f678bbdf8946c6258883291f6b58657
+Source: AppleMusicIosBackground.hlsl
+Copyright the Lyricify-Backgrounds contributors. Licensed under Apache-2.0.
+Changes by EmoC: GLSL/Flutter port of rotation periods and saturation treatment;
+low-resolution artwork sampling, continuous UV warping, and light/dark compositing.
+The Flutter controls and layouts are original EmoC implementations.

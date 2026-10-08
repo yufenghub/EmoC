@@ -8,6 +8,59 @@ All notable public changes to EmoC will be documented in this file.
 
 Public versions should match the version in `pubspec.yaml`.
 
+## [1.0.12] - 2026-10-08
+
+本次公开发布汇总了 `1.0.8` 之后的本地版本更新。
+
+This public release includes the local updates made after `1.0.8`.
+
+### 新增 / Added
+
+- 简约/华丽外观切换、液态玻璃、镂空/实心卡片、卡片边框开关，以及亮暗优先/封面优先背景。
+  Added simple/liquid-glass appearances, outline/solid cards, optional card frames, and theme-first/artwork-first backgrounds.
+- 按首页、歌单、设置、歌词分区域配置的无字模式与真实界面实时预览。
+  Added per-page text visibility and live previews for home, library, settings, and lyrics.
+- 播放页按钮显隐、长按拖拽换位、按钮大小和歌词字号调节；文字、图标、进度条分别动态取色或使用固定颜色。
+  Added player-control visibility, drag reordering, button/lyric sizing, and independent dynamic or fixed text, icon, and progress colors.
+- 本地文件/文件夹导入、本地歌单、配套 LRC 歌词、最近播放、搜索历史，以及歌单多选与排序。
+  Added local file/folder import, local playlists, accompanying LRC lyrics, listening/search history, and playlist batch selection and sorting.
+- 无缝连续播放、可调交叉淡化、五频段均衡器与六种预设，以及基于歌曲增益信息的音量均衡。
+  Added continuous playback, adjustable crossfade, a five-band equalizer with six presets, and volume normalization using track gain metadata.
+- Wi-Fi/移动网络独立音质、预加载与播放策略、音质回退、Android 桌面播放小组件，以及可共存且单独标注的 Debug 包。
+  Added separate Wi-Fi/mobile quality and prefetch policies, quality fallback, an Android playback widget, and a separately labeled debug package.
+
+### 修复 / Fixed
+
+- 修复 Apple Music 样式歌词最多只渲染固定几行、下方仍有空白的问题。直接按歌词区实际剩余高度、用户字号和系统文字缩放决定行数与行距。
+  Fixed Apple Music-style lyrics rendering only a fixed number of rows despite unused space. Row count and spacing now follow the actual lyric viewport and user/system text sizes.
+- 修复搜索结果滑动后回到推荐、刷新提示滞留、新建歌单报错，以及二级页面和播放器背景短暂消失等界面问题。
+  Fixed search results reverting to recommendations, stuck refresh hints, playlist-creation errors, and background flashes on secondary/player pages.
+- 修复播放器按钮重复拖拽换位、圆角卡片点击反馈、设置卡片材质不一致，以及启动时外观短暂切换的问题。
+  Fixed repeated player-control dragging, rounded-card tap feedback, inconsistent settings surfaces, and startup appearance changes.
+
+### 优化 / Improved
+
+- 首页歌曲列表改为按可见范围构建，减少离屏玻璃卡片的构建、绘制与封面准备开销，同时保留原有材质。
+  Lazily builds home song rows to reduce offscreen glass rendering and artwork work while preserving the existing material.
+- 优化封面缓存、重复请求合并、请求超时和预加载取消，减少长时间运行后的额外工作。
+  Improved artwork caching, request coalescing, timeouts, and prefetch cancellation to reduce accumulating work.
+- 统一三种歌词样式的滚动过渡，优化焦点高亮、译文层次、屏幕字号适配、切歌背景过渡、导航和刷新动画。
+  Unified lyric transitions and improved focus/translation hierarchy, responsive text sizing, artwork-background transitions, navigation, and refresh motion.
+- 更新默认外观配置与 README，并用 MuMu 实际截图替换旧界面图片。
+  Updated default appearance settings and README with fresh screenshots captured in MuMu.
+
+### 安装包 / Package
+
+- 正式版 APK 包含 `armeabi-v7a`、`arm64-v8a` 和 `x86_64`，支持 Android 7.0（API 24）及以上。
+  The release APK includes ARM32, ARM64, and x86_64 builds and requires Android 7.0 (API 24) or newer.
+
+### 验证 / Verification
+
+- Dart 静态分析无问题，92 项 Flutter 测试通过；新增歌词可用高度、自定义字号和系统文字缩放回归测试。
+  Dart analysis passed with no issues, and all 92 Flutter tests passed, including lyric-height and user/system text-scaling regressions.
+- 签名通用 Release 与独立 Debug 包均构建成功并安装到 MuMu，界面展示图来自正式版实际运行截图。
+  Signed universal release and separate debug APKs built and installed successfully in MuMu; gallery images are actual release-build captures.
+
 ## [1.0.8] - 2026-07-26
 
 ### 修复 / Fixed

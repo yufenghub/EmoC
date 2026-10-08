@@ -17,6 +17,7 @@ class SongArtworkPipeline {
   static const int _maxActiveJobs = 6;
 
   bool isReady(MirrorItem song) {
+    if (song.isLocal) return true;
     if (!model.showSongCovers) return true;
     final cover = model.coverFor(song);
     return cover.startsWith('http') &&
@@ -24,6 +25,7 @@ class SongArtworkPipeline {
   }
 
   Future<bool> prepare(MirrorItem song, {bool forceMetadata = false}) {
+    if (song.isLocal) return Future.value(true);
     if (!model.showSongCovers) return Future<bool>.value(true);
     final key =
         '${_songArtworkIdentity(song)}|${forceMetadata ? 'force' : 'normal'}';
@@ -100,6 +102,7 @@ class SongArtworkPipeline {
     if (!model.showSongCovers || songs.isEmpty) return true;
     var allReady = true;
     for (var start = 0; start < songs.length; start += 6) {
+      if (!model.networkPolicy.canPrefetch) return false;
       final results = await Future.wait(
         songs.skip(start).take(6).map((song) {
           return prepare(
@@ -147,6 +150,8 @@ class SongViewportController extends ChangeNotifier {
   bool _scheduledShowsCovers = true;
   int _generation = 0;
   int _automaticBatchesRemaining = 0;
+  Timer? _automaticPrefetchTimer;
+  bool _disposed = false;
   int readyCount = 0;
   bool preparing = false;
 
@@ -159,6 +164,8 @@ class SongViewportController extends ChangeNotifier {
       _sourceShowsCovers == model.showSongCovers;
 
   void reset() {
+    if (_disposed) return;
+    _automaticPrefetchTimer?.cancel();
     _sourceSongs = null;
     _scheduledSongs = null;
     _generation += 1;
@@ -174,6 +181,7 @@ class SongViewportController extends ChangeNotifier {
     List<MirrorItem> songs, {
     int initialReadyCount = 0,
   }) {
+    if (_disposed) return;
     final showsCovers = model.showSongCovers;
     if ((identical(_sourceSongs, songs) && _sourceShowsCovers == showsCovers) ||
         (identical(_scheduledSongs, songs) &&
@@ -183,7 +191,8 @@ class SongViewportController extends ChangeNotifier {
     _scheduledSongs = songs;
     _scheduledShowsCovers = showsCovers;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!identical(_scheduledSongs, songs) ||
+      if (_disposed ||
+          !identical(_scheduledSongs, songs) ||
           _scheduledShowsCovers != showsCovers) {
         return;
       }
@@ -191,6 +200,7 @@ class SongViewportController extends ChangeNotifier {
       _sourceSongs = songs;
       _sourceShowsCovers = showsCovers;
       _songs = songs.toList(growable: false);
+      _automaticPrefetchTimer?.cancel();
       _generation += 1;
       // A stale low high-water mark (for example, two rows captured while a
       // playlist was still loading) must not collapse a populated playlist on
@@ -226,7 +236,8 @@ class SongViewportController extends ChangeNotifier {
   }
 
   Future<void> prepareNext(AppModel model) async {
-    if (preparing || readyCount >= _songs.length) return;
+    if (_disposed || preparing || readyCount >= _songs.length) return;
+    _automaticPrefetchTimer?.cancel();
     if (!model.showSongCovers) {
       readyCount = _songs.length;
       notifyListeners();
@@ -252,19 +263,29 @@ class SongViewportController extends ChangeNotifier {
         preparation.then<void>((_) {}),
         Future<void>.delayed(const Duration(milliseconds: 900)),
       ]);
-      if (generation != _generation) return;
+      if (_disposed || generation != _generation) return;
       readyCount = groupEnd;
       notifyListeners();
     }
     preparing = false;
     notifyListeners();
     if (_automaticBatchesRemaining > 0 && readyCount < _songs.length) {
-      unawaited(
-        Future<void>.delayed(
-          const Duration(milliseconds: 120),
-          () => prepareNext(model),
-        ),
-      );
+      _automaticPrefetchTimer = Timer(const Duration(milliseconds: 120), () {
+        if (!_disposed && generation == _generation) {
+          unawaited(prepareNext(model));
+        }
+      });
     }
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _generation += 1;
+    _automaticPrefetchTimer?.cancel();
+    _scheduledSongs = null;
+    _sourceSongs = null;
+    _songs = const [];
+    super.dispose();
   }
 }

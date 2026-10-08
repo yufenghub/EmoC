@@ -31,6 +31,22 @@ class PlaybackOrderController {
     return currentIndex > 0 ? currentIndex - 1 : songs.length - 1;
   }
 
+  int peekNextIndex({
+    required List<MirrorItem> songs,
+    required int currentIndex,
+    required String mode,
+  }) {
+    if (!_validIndex(songs, currentIndex)) return -1;
+    if (mode == 'one') return currentIndex;
+    if (mode != 'shuffle') return (currentIndex + 1) % songs.length;
+    _synchronizeShuffle(songs, currentIndex);
+    if (songs.length == 1) return currentIndex;
+    if (_shuffleCursor + 1 >= _shuffleOrder.length) {
+      _buildShuffleOrder(songs, currentIndex);
+    }
+    return _shuffleOrder[_shuffleCursor + 1];
+  }
+
   int indexAfterBlocked({
     required List<MirrorItem> songs,
     required int blockedIndex,

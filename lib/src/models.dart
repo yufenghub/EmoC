@@ -17,7 +17,12 @@ class MirrorItem {
   final String imageUrl;
   final String href;
 
-  String get id => _idFromMusicUrl(href);
+  bool get isLocal =>
+      href.startsWith('content://') || href.startsWith('file://');
+
+  String get id => isLocal
+      ? 'local:${base64Url.encode(utf8.encode(href))}'
+      : _idFromMusicUrl(href);
 
   factory MirrorItem.fromJson(Map<String, dynamic> json) {
     return MirrorItem(
@@ -142,12 +147,20 @@ class PlayerSnapshot {
   }
 
   MirrorItem asMirrorItem() {
-    final href = songId.isEmpty
-        ? ''
-        : 'https://music.163.com/#/song?id=$songId';
+    var href = songId.isEmpty ? '' : 'https://music.163.com/#/song?id=$songId';
+    var local = false;
+    if (songId.startsWith('local:')) {
+      try {
+        final uri = utf8.decode(base64Url.decode(songId.substring(6)));
+        if (uri.startsWith('content://') || uri.startsWith('file://')) {
+          href = uri;
+          local = true;
+        }
+      } catch (_) {}
+    }
     return MirrorItem(
       domId: 'player_$songId',
-      kind: 'song',
+      kind: local ? 'local' : 'song',
       title: title,
       subtitle: [artist, source].where((item) => item.isNotEmpty).join(' · '),
       imageUrl: coverUrl,
@@ -267,7 +280,7 @@ class SongDetail {
         title: title.isEmpty ? fallback.title : title,
         subtitle: [artist, album].where((item) => item.isNotEmpty).join(' · '),
         imageUrl: cover.isEmpty ? fallback.imageUrl : cover,
-        href: id.isEmpty
+        href: fallback.isLocal || id.isEmpty
             ? fallback.href
             : 'https://music.163.com/#/song?id=$id',
       ),
